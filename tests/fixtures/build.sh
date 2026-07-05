@@ -105,11 +105,19 @@ section = sectname + sect_segname + struct.pack('<QQIIIIIIII', sect_addr, sect_s
 lc_main = 0x80000028
 main_cmd = struct.pack('<IIQQ', lc_main, 24, sect_offset, 0)
 macho = header + segment_cmd + section + main_cmd
+# Patch sizeofcmds (offset 20 in the Mach-O header).
+cmds = segment_cmd + section + main_cmd
+header = header[:20] + struct.pack('<I', len(cmds)) + header[24:]
+macho = header + cmds
 # pad to filesize
 macho += b'\x00' * (sect_offset - len(macho))
 macho += b'\xc3'  # ret
 macho += b'\x00' * (filesize - len(macho))
 sys.stdout.buffer.write(macho)
 " > "$OUT_DIR/sample.macho" 2>/dev/null && echo "[fixtures] built sample.macho (hand-crafted, x86-64)"
+
+# v0.0.2: AArch64 Mach-O fixture (4 instructions: mov/add/ret).
+python3 gen_arm64_macho.py > "$OUT_DIR/sample.arm64.macho" 2>/dev/null \
+    && echo "[fixtures] built sample.arm64.macho (hand-crafted, AArch64)"
 
 ls -la "$OUT_DIR"

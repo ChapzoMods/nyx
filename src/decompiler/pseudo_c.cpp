@@ -9,6 +9,7 @@
 
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 namespace nyx {
 
@@ -140,18 +141,75 @@ std::string render_pseudo_c(const ir::Function& fn) {
     os << "// Blocks: " << fn.blocks.size() << "\n";
     os << "void " << (fn.name.empty() ? "sub" : fn.name) << "(void) {\n";
 
+    // Build a quick lookup: block start_addr -> index. Used to detect the
+    // if/else pattern (BranchCond + fall-through Branch).
+    std::unordered_map<std::uint64_t, std::size_t> by_addr;
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
+        by_addr[fn.blocks[i].start_addr] = i;
+    }
+
+    auto label = [](std::uint64_t a) {
+        std::ostringstream s;
+        s << "L_" << std::hex << a << std::dec;
+        return s.str();
+    };
+
     for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
         const auto& b = fn.blocks[i];
         os << "  // block " << i << " @ 0x" << std::hex << b.start_addr << std::dec << "\n";
-        os << "  L_" << std::hex << b.start_addr << std::dec << ":\n";
-        for (const auto& ins : b.instructions) {
+        os << "  " << label(b.start_addr) << ":\n";
+
+        // Detect the if/else pattern: the block ends with BranchCond and the
+        // next instruction in the *same* block would be a Branch. Since our
+        // CFG splits terminators into their own block tails, the pattern is:
+        //   block[i] ends with BranchCond(cond, target_else)
+        //   block[i+1] (fall-through) is the "then" branch
+        // We emit the BranchCond as `if (cond) goto else_label;` and let the
+        // fall-through naturally represent the then-branch.
+        bool emitted_if = false;
+        const ir::Instruction* last = b.instructions.empty() ? nullptr : &b.instructions.back();
+
+        for (std::size_t k = 0; k < b.instructions.size(); ++k) {
+            const auto& ins = b.instructions[k];
+            const bool is_last = (k + 1 == b.instructions.size());
+
+            // If this is the BranchCond terminator of a block that has a
+            // single fall-through successor, emit it as `if (!cond) goto then;`
+            // style. The raw form is `if (cond) goto L_else;`.
+            if (is_last && ins.op == ir::OpCode::BranchCond && ins.operands.size() >= 2
+                && ins.operands[1].kind == ir::Operand::Kind::Label) {
+                const auto target = ins.operands[1].label_addr;
+                os << "    if (" << render_operand(ins.operands[0])
+                   << ") goto " << label(target) << ";\n";
+                emitted_if = true;
+                continue;
+            }
+            // If this is a Branch that jumps backwards or far away, emit as
+            // `goto L;` (the fall-through case is implicit).
+            if (is_last && ins.op == ir::OpCode::Branch && !ins.operands.empty()
+                && ins.operands[0].kind == ir::Operand::Kind::Label) {
+                const auto target = ins.operands[0].label_addr;
+                // Only emit an explicit goto when the target is NOT the very
+                // next block (which would be a redundant jump).
+                const auto it = by_addr.find(target);
+                const bool is_next_block = (it != by_addr.end() && it->second == i + 1);
+                if (!is_next_block) {
+                    os << "    goto " << label(target) << ";\n";
+                }
+                continue;
+            }
             os << "    " << render_instruction(ins) << "\n";
         }
-        if (!b.successors.empty()) {
+        (void)emitted_if;
+
+        // Successor comment for blocks that don't terminate on a branch we
+        // already rendered (helps when reading the raw CFG).
+        if (!b.successors.empty() && !(last && (last->op == ir::OpCode::Branch
+                                              || last->op == ir::OpCode::BranchCond))) {
             os << "    // successors: ";
             for (std::size_t j = 0; j < b.successors.size(); ++j) {
                 if (j) os << ", ";
-                os << "L_" << std::hex << b.successors[j] << std::dec;
+                os << label(b.successors[j]);
             }
             os << "\n";
         }

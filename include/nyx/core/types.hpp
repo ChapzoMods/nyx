@@ -38,6 +38,10 @@ struct Section {
     bool         writable    = false;
     bool         readable    = true;
     bool         is_code     = false;     // parser hints (e.g. SHF_EXECINSTR)
+    /// ELF-only: section has no file backing (SHT_NOBITS, e.g. .bss/.tbss).
+    /// When true, `file_size` is 0 and `mem_size` reflects the runtime size;
+    /// readers must NOT try to dereference bytes at `file_off`.
+    bool         is_nobits   = false;
 };
 
 /// Generic symbol descriptor.
@@ -48,6 +52,12 @@ struct Symbol {
     enum class Kind : std::uint8_t { Unknown, Function, Object, Section, File } kind = Kind::Unknown;
     bool          imported = false;
     bool          exported = false;
+    /// PE-only: when `imported` is true and the symbol was resolved by
+    /// ordinal rather than by name, this holds the ordinal value (> 0).
+    /// Zero means "not an ordinal import" or "not a PE symbol".
+    std::uint16_t ordinal = 0;
+    /// For PE imports: the DLL name without path. Empty for non-PE symbols.
+    std::string   module;
 };
 
 /// Result of parsing: a uniform view over the binary, format-agnostic.
@@ -68,6 +78,12 @@ struct BinaryInfo {
 
     std::vector<Section> sections;
     std::vector<Symbol>  symbols;
+
+    /// Mach-O fat/universal archives only: every contained slice, fully
+    /// parsed. `arch`/`sections`/`symbols` above always describe the
+    /// "primary" slice (the first one Nyx recognised); the remaining
+    /// slices live here so callers can iterate them. Empty for ELF/PE.
+    std::vector<BinaryInfo> slices;
 
     /// Returns the first executable section (typically .text or __TEXT).
     [[nodiscard]] const Section* code_section() const noexcept;

@@ -145,33 +145,83 @@ BinaryInfo MachOParser::parse(ByteView data) const {
     const std::uint32_t le = read_u32_le(data.data());
 
     if (be == FAT_MAGIC || be == FAT_MAGIC_64 || le == FAT_MAGIC || le == FAT_MAGIC_64) {
-        // Fat binary: pick the first slice that maps to a known arch.
+        // Fat binary: parse EVERY slice, return all of them. The primary
+        // BinaryInfo returned to the caller describes the first recognised
+        // slice; the rest are accessible via `info.slices`.
         const bool swap = (be == FAT_MAGIC || be == FAT_MAGIC_64);
+        const bool fat64 = (be == FAT_MAGIC_64 || le == FAT_MAGIC_64);
         const std::uint32_t nfat = swap ? read_u32_be(data.data() + 4) : read_u32_le(data.data() + 4);
+
+        // Fat arch entry sizes: 20 bytes for FAT_MAGIC, 32 bytes for FAT_MAGIC_64.
+        const std::size_t arch_entry_size = fat64 ? 32 : 20;
+        std::vector<BinaryInfo> parsed_slices;
+        parsed_slices.reserve(nfat);
+
         for (std::uint32_t i = 0; i < nfat; ++i) {
-            const std::size_t off = 8 + i * 20;
-            if (off + 20 > data.size()) break;
-            const std::int32_t cputype = swap ? static_cast<std::int32_t>(read_u32_be(data.data() + off)) : static_cast<std::int32_t>(read_u32_le(data.data() + off));
-            const std::uint32_t slice_off = swap ? read_u32_be(data.data() + off + 8) : read_u32_le(data.data() + off + 8);
-            const std::uint32_t slice_size = swap ? read_u32_be(data.data() + off + 12) : read_u32_le(data.data() + off + 12);
-            if (slice_off + slice_size > data.size()) continue;
-            // Recurse on the slice.
+            const std::size_t off = 8 + i * arch_entry_size;
+            if (off + arch_entry_size > data.size()) break;
+
+            // fat_arch fields: cputype (4), cpusubtype (4), offset (4/8), size (4/8), align (4)
+            // fat_arch_64 adds a reserved (4) at the end. Endianness follows the magic.
+            auto read_u32_at = [&](std::size_t o) {
+                return swap ? read_u32_be(data.data() + o) : read_u32_le(data.data() + o);
+            };
+            const std::int32_t cputype = static_cast<std::int32_t>(read_u32_at(off));
+            std::uint64_t slice_off, slice_size;
+            if (fat64) {
+                slice_off  = swap ? read_u64_be(data.data() + off + 8)  : read_u64_le(data.data() + off + 8);
+                slice_size = swap ? read_u64_be(data.data() + off + 16) : read_u64_le(data.data() + off + 16);
+            } else {
+                slice_off  = read_u32_at(off + 8);
+                slice_size = read_u32_at(off + 12);
+            }
+            if (slice_off + slice_size > data.size()) {
+                NYX_WARN("Mach-O: fat slice " + std::to_string(i) + " out of bounds, skipping");
+                continue;
+            }
+
+            ByteView slice{data.data() + slice_off, static_cast<std::size_t>(slice_size)};
             MachOParser inner;
-            ByteView slice{data.data() + slice_off, slice_size};
-            if (!inner.accepts(slice)) continue;
-            // Only accept slices for arches Nyx understands.
+            if (!inner.accepts(slice)) {
+                NYX_WARN("Mach-O: fat slice " + std::to_string(i) + " has bad magic, skipping");
+                continue;
+            }
+
+            // Filter to arches Nyx understands, but still try every slice -
+            // we want to surface parseable ones even if the architecture is
+            // not yet supported downstream.
             switch (cputype) {
                 case CPU_TYPE_X86: case CPU_TYPE_X86_64:
                 case CPU_TYPE_ARM: case CPU_TYPE_ARM64:
                 case CPU_TYPE_POWERPC: case CPU_TYPE_POWERPC64:
                     break;
-                default: continue;
+                default:
+                    NYX_INFO("Mach-O: fat slice " + std::to_string(i)
+                             + " has unsupported cputype=" + std::to_string(cputype)
+                             + ", parsing anyway");
+                    break;
             }
-            BinaryInfo info = inner.parse(slice);
-            NYX_INFO("Mach-O: selected slice " + std::to_string(i) + " (cputype=" + std::to_string(cputype) + ")");
-            return info;
+
+            BinaryInfo slice_info;
+            try {
+                slice_info = inner.parse(slice);
+            } catch (const Error& e) {
+                NYX_WARN("Mach-O: fat slice " + std::to_string(i) + " parse failed: " + std::string(e.what()));
+                continue;
+            }
+            parsed_slices.push_back(std::move(slice_info));
         }
-        NYX_THROW(Parser, "Mach-O: fat archive contains no recognised slice");
+
+        if (parsed_slices.empty()) {
+            NYX_THROW(Parser, "Mach-O: fat archive contains no parseable slice");
+        }
+
+        // Promote the first recognised slice to the primary BinaryInfo.
+        BinaryInfo info = std::move(parsed_slices.front());
+        info.format = BinaryFormat::MachO;
+        info.slices = std::move(parsed_slices);
+        NYX_INFO("Mach-O: fat archive yielded " + std::to_string(info.slices.size()) + " slices");
+        return info;
     }
 
     // Single-arch Mach-O. Endianness: magic in BE means host-swap needed.

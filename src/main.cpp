@@ -158,6 +158,17 @@ int main(int argc, char** argv) {
     try {
         nyx::BinaryInfo bin = nyx::BinaryParser::load_and_parse(args.input_path);
 
+        // Log the auto-detected arch so users get feedback when they don't
+        // pass --arch. The detection itself happens in the format parser
+        // (ELF e_machine, PE Machine, Mach-O cputype).
+        if (bin.arch == nyx::Arch::Unknown) {
+            NYX_WARN("auto-detected arch is Unknown; pass --arch to override");
+        } else {
+            NYX_INFO("auto-detected: format=" + std::string(nyx::to_string(bin.format))
+                     + " arch=" + std::string(nyx::arch_name(bin.arch))
+                     + " (" + std::string(nyx::arch_pretty(bin.arch)) + ")");
+        }
+
         // Apply overrides if requested.
         if (!args.force_arch.empty()) {
             auto a = nyx::arch_from_name(args.force_arch);
@@ -166,6 +177,7 @@ int main(int argc, char** argv) {
                 return 1;
             }
             bin.arch = *a;
+            NYX_INFO("arch overridden to " + std::string(nyx::arch_name(bin.arch)));
         }
         if (!args.force_format.empty()) {
             auto f = nyx::format_from_name(args.force_format);
@@ -186,6 +198,8 @@ int main(int argc, char** argv) {
             if (file_buf) {
                 for (const auto& s : bin.sections) {
                     if (!s.executable) continue;
+                    // SHT_NOBITS sections have no file bytes to disassemble.
+                    if (s.is_nobits) continue;
                     if (s.file_off >= file_buf->size()) continue;
                     const std::size_t avail = file_buf->size() - s.file_off;
                     const std::size_t n = std::min<std::size_t>(s.file_size, avail);

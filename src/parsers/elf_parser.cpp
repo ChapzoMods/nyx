@@ -40,6 +40,7 @@ constexpr std::uint16_t ET_DYN  = 3;
 constexpr std::uint32_t SHT_PROGBITS = 1;
 constexpr std::uint32_t SHT_SYMTAB   = 2;
 constexpr std::uint32_t SHT_STRTAB   = 3;
+constexpr std::uint32_t SHT_NOBITS   = 8;
 constexpr std::uint32_t SHT_DYNSYM   = 11;
 
 // sh_flags values
@@ -296,8 +297,16 @@ BinaryInfo ElfParser::parse(ByteView data) const {
         sec.name      = read_str(shstr_off, s.name);
         sec.vaddr     = s.addr;
         sec.file_off  = s.offset;
-        sec.file_size = s.size;
-        sec.mem_size  = s.size;
+        // SHT_NOBITS sections (.bss, .tbss) occupy no space in the file;
+        // expose their runtime size via mem_size only.
+        if (s.type == SHT_NOBITS) {
+            sec.is_nobits  = true;
+            sec.file_size  = 0;
+            sec.mem_size   = s.size;
+        } else {
+            sec.file_size = s.size;
+            sec.mem_size  = s.size;
+        }
         sec.flags     = static_cast<std::uint32_t>(s.flags & 0xFFFFFFFFu);
         sec.executable = (s.flags & SHF_EXECINSTR) != 0;
         sec.writable   = (s.flags & SHF_WRITE)     != 0;

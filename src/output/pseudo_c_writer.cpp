@@ -8,6 +8,7 @@
 #include "nyx/core/arch.hpp"
 #include "nyx/core/bytes.hpp"
 #include "nyx/core/types.hpp"
+#include "nyx/version.hpp"
 
 #include <sstream>
 #include <string>
@@ -18,7 +19,7 @@ void write_pseudo_c(std::ostream& os,
                     const BinaryInfo& bin,
                     const std::vector<DecompiledFunction>& functions) {
     os << "// =============================================================================\n";
-    os << "// Nyx v0.0.1 - pseudo-C decompilation\n";
+    os << "// Nyx v" << VERSION_STRING << " - pseudo-C decompilation\n";
     os << "// Binary: " << bin.path << "\n";
     os << "// Format: " << to_string(bin.format) << "  Arch: " << arch_name(bin.arch) << "\n";
     os << "// Decompiled functions: " << functions.size() << "\n";

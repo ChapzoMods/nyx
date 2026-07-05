@@ -12,6 +12,7 @@
 #include "nyx/parsers/disassembler.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -32,6 +33,12 @@ namespace nyx {
 /// The lifter keeps a per-function register map (machine reg -> vreg).
 class InstructionLifter {
 public:
+    /// Function-pointer-like type used by the ARM64 operand parser to map
+    /// register name strings (e.g. "x0", "w5", "sp") to VReg ids. Exposed
+    /// as a public alias so the free function in the .cpp can use it
+    /// without leaking the lifter's private state.
+    using RegMapper = std::function<ir::VReg(const std::string&)>;
+
     InstructionLifter(Arch arch, Endian endian);
 
     /// Lifts a sequence of decoded instructions into IR. The first
@@ -55,9 +62,13 @@ private:
     mutable ir::VReg next_vreg_ = 1;
 
     [[nodiscard]] ir::VReg map_reg(std::uint32_t machine_reg) const;
+    /// Maps a register name (e.g. "rax", "x0", "sp") to a stable VReg.
+    /// Two calls with the same name return the same vreg.
+    [[nodiscard]] ir::VReg map_reg_by_name(const std::string& name) const;
     [[nodiscard]] ir::Operand lift_operand_x86(const DecodedInstruction& insn, int op_index) const;
     [[nodiscard]] std::vector<ir::Instruction> lift_x86(const DecodedInstruction& insn) const;
-    [[nodiscard]] std::vector<ir::Instruction> lift_arm(const DecodedInstruction& insn) const;
+    [[nodiscard]] std::vector<ir::Instruction> lift_arm64(const DecodedInstruction& insn) const;
+    [[nodiscard]] std::vector<ir::Instruction> lift_arm32(const DecodedInstruction& insn) const;
     [[nodiscard]] std::vector<ir::Instruction> lift_generic(const DecodedInstruction& insn) const;
 };
 

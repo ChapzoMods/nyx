@@ -31,6 +31,14 @@ ir::VReg InstructionLifter::map_reg(std::uint32_t machine_reg) const {
     return v;
 }
 
+ir::VReg InstructionLifter::map_reg_by_name(const std::string& name) const {
+    // Map register names (e.g. "rax", "x0", "w5", "sp") to stable vregs.
+    // We hash the name into a 32-bit key and feed it through map_reg so the
+    // per-function allocator deduplicates them naturally.
+    const std::uint32_t key = static_cast<std::uint32_t>(std::hash<std::string>{}(name));
+    return map_reg(key);
+}
+
 // ---------------------------------------------------------------------------
 // x86 / x86-64 operand lifting
 // ---------------------------------------------------------------------------
@@ -323,19 +331,303 @@ std::vector<ir::Instruction> InstructionLifter::lift_x86(const DecodedInstructio
 }
 
 // ---------------------------------------------------------------------------
-// ARM / AArch64 lifting - mnemonic-based, intentionally conservative
+// ARM64 / AArch64 lifting - real lifter for the common instruction set.
+//
+// v0.0.2 coverage: mov, movz, movk, add, sub, mul, and, or, eor, lsl, lsr,
+// asr, ldr, ldp, str, stp, cmp, tst, b, bl, b.cond, cbz, cbnz, ret, nop.
+// Anything else falls back to Opaque.
 // ---------------------------------------------------------------------------
-std::vector<ir::Instruction> InstructionLifter::lift_arm(const DecodedInstruction& insn) const {
+namespace {
+
+/// Splits a Capstone op_str like "x0, x1, #0x10" into trimmed tokens,
+/// respecting that memory operands `[x0, #0x10]!` must not be split on
+/// the commas inside the brackets.
+std::vector<std::string> split_arm64_ops(const std::string& s) {
+    std::vector<std::string> out;
+    std::string cur;
+    int bracket_depth = 0;
+    for (char c : s) {
+        if (c == '[') ++bracket_depth;
+        else if (c == ']') --bracket_depth;
+        if (c == ',' && bracket_depth == 0) {
+            // trim
+            while (!cur.empty() && (cur.front() == ' ' || cur.front() == '\t')) cur.erase(0, 1);
+            while (!cur.empty() && (cur.back()  == ' ' || cur.back()  == '\t')) cur.pop_back();
+            if (!cur.empty()) out.push_back(cur);
+            cur.clear();
+        } else {
+            cur.push_back(c);
+        }
+    }
+    while (!cur.empty() && (cur.front() == ' ' || cur.front() == '\t')) cur.erase(0, 1);
+    while (!cur.empty() && (cur.back()  == ' ' || cur.back()  == '\t')) cur.pop_back();
+    if (!cur.empty()) out.push_back(cur);
+    return out;
+}
+
+/// Parses an ARM64 operand string into an IR Operand.
+/// Supported forms:
+///   "x0", "w0", "sp", "xzr", "wzr"          -> register vreg
+///   "#0x10", "#16", "0x10", "16", "-1"       -> immediate
+///   "[x0]", "[x0, #0x10]", "[x0, x1, lsl #2]" -> memory
+///   "#0x40" with `force_imm`                 -> immediate even without '#'
+ir::Operand parse_arm64_operand(const std::string& s, InstructionLifter::RegMapper map_reg) {
+    std::string t = s;
+    while (!t.empty() && (t.front() == ' ' || t.front() == '\t')) t.erase(0, 1);
+    while (!t.empty() && (t.back()  == ' ' || t.back()  == '\t')) t.pop_back();
+    if (t.empty()) return ir::Operand::imm(0);
+
+    // Memory operand: starts with '['.
+    if (t.front() == '[') {
+        // Strip the brackets and any pre-index '!' marker.
+        std::string inner = t;
+        if (!inner.empty() && inner.front() == '[') inner.erase(0, 1);
+        if (!inner.empty() && inner.back()  == ']') inner.pop_back();
+        if (!inner.empty() && inner.back()  == '!') inner.pop_back();
+        // Trim again.
+        while (!inner.empty() && (inner.front() == ' ' || inner.front() == '\t')) inner.erase(0, 1);
+        while (!inner.empty() && (inner.back()  == ' ' || inner.back()  == '\t')) inner.pop_back();
+
+        // Split inner on commas at top level (no nested brackets in ARM64
+        // memory operands, but be defensive).
+        std::vector<std::string> parts;
+        std::string cur;
+        for (char c : inner) {
+            if (c == ',') {
+                while (!cur.empty() && (cur.back() == ' ' || cur.back() == '\t')) cur.pop_back();
+                if (!cur.empty()) parts.push_back(cur);
+                cur.clear();
+            } else {
+                cur.push_back(c);
+            }
+        }
+        while (!cur.empty() && (cur.back() == ' ' || cur.back() == '\t')) cur.pop_back();
+        if (!cur.empty()) parts.push_back(cur);
+
+        ir::Operand op{};
+        op.kind = ir::Operand::Kind::Mem;
+        op.mem_base  = ir::INVALID_VREG;
+        op.mem_index = ir::INVALID_VREG;
+        op.mem_scale = 1;
+        op.mem_disp  = 0;
+        op.mem_size  = 0;
+
+        for (const auto& p : parts) {
+            std::string pp = p;
+            while (!pp.empty() && (pp.front() == ' ' || pp.front() == '\t')) pp.erase(0, 1);
+            if (pp.empty()) continue;
+
+            // "lsl #N" or "lsl N" -> scale = 1 << N for shifted-index forms.
+            if (pp.rfind("lsl", 0) == 0) {
+                std::string num = pp.substr(3);
+                while (!num.empty() && (num.front() == ' ' || num.front() == '#' || num.front() == '\t')) num.erase(0, 1);
+                try {
+                    const int shift = static_cast<int>(std::stoll(num, nullptr, 0));
+                    if (shift >= 0 && shift < 8) op.mem_scale = static_cast<std::uint8_t>(1u << shift);
+                } catch (...) {}
+                continue;
+            }
+            // Immediate displacement: "#0x10" / "#16" / "0x10".
+            if (pp.front() == '#' || std::isdigit(static_cast<unsigned char>(pp.front())) || pp.front() == '-' || pp.front() == '+') {
+                std::string num = pp;
+                if (!num.empty() && num.front() == '#') num.erase(0, 1);
+                try { op.mem_disp = static_cast<std::int64_t>(std::stoll(num, nullptr, 0)); } catch (...) {}
+                continue;
+            }
+            // Otherwise it's a register. First one wins as base; second as index.
+            const auto v = map_reg(pp);
+            if (op.mem_base == ir::INVALID_VREG) op.mem_base = v;
+            else if (op.mem_index == ir::INVALID_VREG) op.mem_index = v;
+        }
+        return op;
+    }
+
+    // Immediate: '#' prefix or pure number.
+    if (t.front() == '#' || std::isdigit(static_cast<unsigned char>(t.front())) || t.front() == '-' || t.front() == '+') {
+        std::string num = t;
+        if (!num.empty() && num.front() == '#') num.erase(0, 1);
+        try {
+            return ir::Operand::imm(static_cast<std::int64_t>(std::stoull(num, nullptr, 0)));
+        } catch (...) {
+            return ir::Operand::imm(0);
+        }
+    }
+
+    // Otherwise: register. Map by name (stable hash).
+    return ir::Operand::reg(map_reg(t));
+}
+
+}  // namespace
+
+std::vector<ir::Instruction> InstructionLifter::lift_arm64(const DecodedInstruction& insn) const {
+    ir::Builder b;
+    const std::string& m = insn.mnemonic;
+    const std::string& o = insn.op_str;
+    const auto ops = split_arm64_ops(o);
+
+    // Helper: parse operand i, or return an imm(0) sentinel if missing.
+    auto op = [&](std::size_t i) -> ir::Operand {
+        if (i >= ops.size()) return ir::Operand::imm(0);
+        return parse_arm64_operand(ops[i], [this](const std::string& s){ return this->map_reg_by_name(s); });
+    };
+    auto reg = [&](std::size_t i) -> ir::VReg {
+        if (i >= ops.size()) return ir::INVALID_VREG;
+        return map_reg_by_name(ops[i]);
+    };
+
+    // Note: map_reg_by_name is a private helper added below; it parses
+    // register names like "x0"/"w5"/"sp"/"xzr" and returns a stable VReg.
+
+    if (m == "nop" || m == "wfi" || m == "wfe" || m == "yield" || m == "sev") {
+        b.nop();
+    } else if (m == "ret" || m == "retaa" || m == "retab") {
+        b.ret();
+    } else if (m == "b") {
+        if (auto t = insn.direct_target()) b.branch(*t);
+        else b.opaque(m + " " + o);
+    } else if (m == "bl" || m == "blr") {
+        std::optional<std::uint64_t> t = (m == "bl") ? insn.direct_target() : std::nullopt;
+        if (m == "bl" && t.has_value()) {
+            b.call(ir::Operand::imm(static_cast<std::int64_t>(*t)));
+        } else if (!ops.empty()) {
+            // Indirect call through register: blr xN.
+            b.call(op(0));
+        } else {
+            b.opaque(m + " " + o);
+        }
+    } else if (m.rfind("b.", 0) == 0 || m == "cbz" || m == "cbnz" || m == "tbz" || m == "tbnz") {
+        // Conditional branch. Capstone already resolved the absolute target.
+        if (auto t = insn.direct_target()) {
+            // For cbz/cbnz/tbz/tbnz the first operand is the reg being tested;
+            // for b.cond there is no test operand.
+            ir::VReg cond = map_reg(0xBEEF0000u + static_cast<std::uint32_t>(b.view().size()));
+            if (m == "cbz" || m == "cbnz" || m == "tbz" || m == "tbnz") {
+                // Approximate: cond = (reg != 0) so the BranchCond reads it.
+                const ir::VReg tested = reg(0);
+                b.cmp(cond, ir::Operand::reg(tested), ir::Operand::imm(0));
+            }
+            b.branch_cond(ir::Operand::reg(cond), *t);
+        } else {
+            b.opaque(m + " " + o);
+        }
+    } else if (m == "mov" || m == "movz" || m == "orr" || m == "movn") {
+        // mov dst, src   OR   movz dst, #imm   (treat the same for v0.0.2)
+        if (ops.size() >= 2) {
+            const ir::VReg d = reg(0);
+            const ir::Operand s = op(1);
+            b.mov(d, s);
+        } else b.opaque(m + " " + o);
+    } else if (m == "movk") {
+        // movk shifts and inserts an immediate half-word; without bitfield
+        // support in the IR, we approximate as a plain mov to keep the
+        // destination live.
+        if (ops.size() >= 2) b.mov(reg(0), op(1));
+        else b.opaque(m + " " + o);
+    } else if (m == "add" || m == "sub" || m == "mul" || m == "and" || m == "or" || m == "eor"
+            || m == "lsl" || m == "lsr" || m == "asr" || m == "udiv" || m == "sdiv") {
+        if (ops.size() >= 3) {
+            ir::OpCode op_code = ir::OpCode::Add;
+            if (m == "sub")  op_code = ir::OpCode::Sub;
+            else if (m == "mul")  op_code = ir::OpCode::Mul;
+            else if (m == "udiv" || m == "sdiv") op_code = ir::OpCode::Div;
+            else if (m == "and")  op_code = ir::OpCode::And;
+            else if (m == "or")   op_code = ir::OpCode::Or;
+            else if (m == "eor")  op_code = ir::OpCode::Xor;
+            else if (m == "lsl")  op_code = ir::OpCode::Shl;
+            else if (m == "lsr")  op_code = ir::OpCode::Shr;
+            else if (m == "asr")  op_code = ir::OpCode::Sar;
+            b.binop(op_code, reg(0), op(1), op(2));
+        } else b.opaque(m + " " + o);
+    } else if (m == "neg" || m == "mvn" || m == "negs") {
+        // neg dst, src  =>  dst = 0 - src
+        if (ops.size() >= 2) {
+            if (m == "mvn") {
+                b.binop(ir::OpCode::Xor, reg(0), op(1), ir::Operand::imm(-1));
+            } else {
+                b.binop(ir::OpCode::Sub, reg(0), ir::Operand::imm(0), op(1));
+            }
+        } else b.opaque(m + " " + o);
+    } else if (m == "ldr" || m == "ldrsw" || m == "ldrb" || m == "ldrh" || m == "ldur") {
+        // ldr dst, [src{, #disp}]
+        if (ops.size() >= 2) {
+            const ir::VReg d = reg(0);
+            const ir::Operand addr = op(1);
+            b.load(d, addr);
+        } else b.opaque(m + " " + o);
+    } else if (m == "str" || m == "strb" || m == "strh" || m == "stur") {
+        // str src, [dst{, #disp}]
+        if (ops.size() >= 2) {
+            const ir::Operand v = op(0);
+            const ir::Operand addr = op(1);
+            b.store(addr, v);
+        } else b.opaque(m + " " + o);
+    } else if (m == "ldp") {
+        // ldp x0, x1, [x2]  =>  load both, second into a fresh vreg.
+        if (ops.size() >= 3) {
+            b.load(reg(0), op(2));
+            // Approximate the second register by emitting a load with a
+            // 8-byte offset, so the CFG/pseudo-C reflects both reads.
+            ir::Operand addr2 = op(2);
+            if (addr2.kind == ir::Operand::Kind::Mem) {
+                addr2.mem_disp += 8;
+                b.load(reg(1), addr2);
+            } else {
+                b.opaque(m + " " + o);
+            }
+        } else b.opaque(m + " " + o);
+    } else if (m == "stp") {
+        // stp x0, x1, [x2]  =>  store both.
+        if (ops.size() >= 3) {
+            b.store(op(2), op(0));
+            ir::Operand addr2 = op(2);
+            if (addr2.kind == ir::Operand::Kind::Mem) {
+                addr2.mem_disp += 8;
+                b.store(addr2, op(1));
+            } else {
+                b.opaque(m + " " + o);
+            }
+        } else b.opaque(m + " " + o);
+    } else if (m == "cmp" || m == "cmn" || m == "tst") {
+        if (ops.size() >= 2) {
+            const ir::VReg tmp = map_reg(0xBEEF0000u + static_cast<std::uint32_t>(b.view().size()));
+            // cmp = sub-with-no-result; cmn = add-with-no-result; tst = and-with-no-result.
+            // We model all three as a Cmp node so the pseudo-C if/else can
+            // pick the result up.
+            b.cmp(tmp, op(0), op(1));
+        } else b.opaque(m + " " + o);
+    } else if (m == "adrp" || m == "adr") {
+        // adrp dst, #page  - we don't model PC-relative addressing precisely.
+        if (ops.size() >= 2) b.mov(reg(0), op(1));
+        else b.opaque(m + " " + o);
+    } else if (m == "br" || m == "braa" || m == "brab") {
+        // Indirect branch through register - model as Branch to an Opaque
+        // since we can't statically resolve the target.
+        b.opaque(m + " " + o);
+    } else {
+        b.opaque(m + (o.empty() ? "" : (" " + o)));
+    }
+
+    auto out = std::move(b).finish();
+    for (auto& i : out) i.addr = insn.address;
+    return out;
+}
+
+std::vector<ir::Instruction> InstructionLifter::lift_arm32(const DecodedInstruction& insn) const {
     ir::Builder b;
     const std::string& m = insn.mnemonic;
     const std::string& o = insn.op_str;
 
+    // ARMv7 has hundreds of forms; v0.0.2 keeps the conservative fallback
+    // and only handles the control-flow mnemonics that Capstone emits in
+    // a stable way.
     if (m == "nop" || m == "wfi" || m == "wfe") {
         b.nop();
+    } else if (m == "bx" || m == "blx" || m == "pop" || m == "push") {
+        b.opaque(m + " " + o);
     } else if (m == "ret") {
         b.ret();
     } else if (m == "b" || m == "bl" || m == "b.eq" || m == "b.ne" || m == "b.gt" || m == "b.lt"
-            || m == "b.ge" || m == "b.le" || m == "cbz" || m == "cbnz" || m == "tbz" || m == "tbnz") {
+            || m == "b.ge" || m == "b.le" || m == "cbz" || m == "cbnz") {
         if (auto t = insn.direct_target()) {
             if (m == "b" || m == "bl") {
                 if (m == "bl") b.call(ir::Operand::imm(static_cast<std::int64_t>(*t)));
@@ -347,19 +639,6 @@ std::vector<ir::Instruction> InstructionLifter::lift_arm(const DecodedInstructio
         } else {
             b.opaque(m + " " + o);
         }
-    } else if (m == "mov" || m == "movz" || m == "movk" || m == "orr") {
-        b.opaque(m + " " + o);  // ARM operand parsing is complex; defer to opaque for v0.0.1
-    } else if (m == "add" || m == "sub" || m == "mul" || m == "and" || m == "or" || m == "eor"
-            || m == "lsl" || m == "lsr" || m == "asr") {
-        b.opaque(m + " " + o);
-    } else if (m == "ldr" || m == "ldp") {
-        b.opaque(m + " " + o);
-    } else if (m == "str" || m == "stp") {
-        b.opaque(m + " " + o);
-    } else if (m == "cmp" || m == "tst") {
-        b.opaque(m + " " + o);
-    } else if (m == "bl" || m == "blr") {
-        b.opaque(m + " " + o);
     } else {
         b.opaque(m + (o.empty() ? "" : (" " + o)));
     }
@@ -406,8 +685,8 @@ std::vector<ir::Instruction> InstructionLifter::lift_one(const DecodedInstructio
     switch (arch_) {
         case Arch::X86:
         case Arch::X86_64:  return lift_x86(insn);
-        case Arch::ARM:
-        case Arch::AARCH64: return lift_arm(insn);
+        case Arch::AARCH64: return lift_arm64(insn);
+        case Arch::ARM:     return lift_arm32(insn);
         default:            return lift_generic(insn);
     }
 }
@@ -424,8 +703,8 @@ ir::Function InstructionLifter::lift_function(const std::vector<DecodedInstructi
         switch (arch_) {
             case Arch::X86:
             case Arch::X86_64:  lifted = lift_x86(i); break;
-            case Arch::ARM:
-            case Arch::AARCH64: lifted = lift_arm(i); break;
+            case Arch::AARCH64: lifted = lift_arm64(i); break;
+            case Arch::ARM:     lifted = lift_arm32(i); break;
             default:            lifted = lift_generic(i); break;
         }
         for (auto& x : lifted) all.push_back(std::move(x));

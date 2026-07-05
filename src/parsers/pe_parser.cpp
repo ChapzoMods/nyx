@@ -317,11 +317,14 @@ void PeParser::walk_imports(BinaryInfo& info, ByteView data,
             if (v == 0) break;
             ++i;
 
-            // Ordinal import - skip name lookup.
+            // Ordinal import: PE stores the ordinal in the low 16 bits.
             if ((v & import_flag) != 0) {
                 Symbol sym{};
-                sym.name = dll_name + "!ord" + std::to_string(v & 0xFFFFu);
-                sym.kind = Symbol::Kind::Function;
+                const std::uint16_t ord = static_cast<std::uint16_t>(v & 0xFFFFu);
+                sym.name     = dll_name + "!" + "ord" + std::to_string(ord);
+                sym.module   = dll_name;
+                sym.ordinal  = ord;
+                sym.kind     = Symbol::Kind::Function;
                 sym.imported = true;
                 info.symbols.push_back(sym);
                 continue;
@@ -336,8 +339,9 @@ void PeParser::walk_imports(BinaryInfo& info, ByteView data,
             for (std::size_t j = hn_off + 2; j < data.size() && base[j] != '\0'; ++j) nm.push_back(base[j]);
             if (nm.empty()) continue;
             Symbol sym{};
-            sym.name = dll_name.empty() ? nm : (dll_name + "!" + nm);
-            sym.kind = Symbol::Kind::Function;
+            sym.name     = dll_name.empty() ? nm : (dll_name + "!" + nm);
+            sym.module   = dll_name;
+            sym.kind     = Symbol::Kind::Function;
             sym.imported = true;
             info.symbols.push_back(sym);
         }

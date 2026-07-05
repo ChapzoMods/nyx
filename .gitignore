@@ -21,6 +21,8 @@ tests/fixtures/sample.elf.arm
 tests/fixtures/sample.elf.aarch64
 tests/fixtures/sample.pe
 tests/fixtures/sample.macho
+tests/fixtures/sample.arm64.macho
+tests/fixtures/sample.fat.macho
 
 # IDE / editor
 .vscode/

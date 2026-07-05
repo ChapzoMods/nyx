@@ -6,6 +6,88 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.0.2] - 2026-07-05
+
+Robustness pass: real ARM64 lifter, multi-slice fat archives, BSS-aware ELF
+parsing, ordinal imports in PE, structured pseudo-C, auto-detection
+feedback, and 21 new tests (10 unit + 5 integration + 6 fixture-driven).
+
+### Added
+
+- **ARM64 lifter** (`InstructionLifter::lift_arm64`): real operand parser
+  that translates the common AArch64 instruction set to the IR -
+  `mov`, `movz`, `movk`, `movn`, `add`, `sub`, `mul`, `and`, `or`, `eor`,
+  `lsl`, `lsr`, `asr`, `udiv`, `sdiv`, `neg`, `mvn`, `ldr`, `ldrsw`,
+  `ldrb`, `ldrh`, `ldur`, `str`, `strb`, `strh`, `stur`, `ldp`, `stp`,
+  `cmp`, `cmn`, `tst`, `b`, `bl`, `blr`, `b.<cond>`, `cbz`, `cbnz`,
+  `tbz`, `tbnz`, `adrp`, `adr`, `ret`, `nop`. Anything else still falls
+  back to `OpCode::Opaque`.
+- **Mach-O fat archives**: the parser now parses EVERY slice in a
+  universal binary and exposes them via `BinaryInfo::slices`. The primary
+  `BinaryInfo` describes the first recognised slice (preserving
+  backwards compatibility); the remaining slices are fully populated.
+  `FAT_MAGIC_64` (64-bit fat archives) is now supported alongside
+  `FAT_MAGIC`.
+- **ELF BSS handling**: sections of type `SHT_NOBITS` (`.bss`, `.tbss`)
+  are now marked `Section::is_nobits = true` and have `file_size = 0`.
+  The decompiler and text dumper skip them when looking for code bytes,
+  preventing out-of-bounds reads on binaries with large BSS segments.
+- **PE ordinal imports**: import-by-ordinal entries now populate
+  `Symbol::ordinal` (the low-16 ordinal value) and `Symbol::module`
+  (the owning DLL name), so consumers can distinguish them from
+  name-based imports.
+- **Auto-detection feedback**: the CLI now logs the auto-detected
+  format/arch at INFO level, so users see what Nyx inferred from the
+  header when `--arch` is not passed.
+- **Structured pseudo-C**: `render_pseudo_c` now emits `if (cond) goto L;`
+  for `BranchCond` terminators and suppresses redundant `goto` when the
+  target is the immediately-following block. This makes the output
+  significantly more readable for functions with simple if/else CFGs.
+- **AArch64 fixture**: `tests/fixtures/gen_arm64_macho.py` generates a
+  minimal AArch64 Mach-O with `mov x0,#0; mov x1,#1; add x2,x0,x1; ret`.
+- **21 new tests**: 10 unit tests for the ARM64 lifter
+  (`test_arm64_lifter.cpp`), 2 integration tests for the ARM64 pipeline
+  (`test_pipeline_arm64.cpp`), and 4 integration tests for v0.0.2
+  features (`test_v002_features.cpp`: BSS, PE ordinals, fat archives,
+  pseudo-C if/else). Test count: 60 unit + 15 integration (was 50 + 11).
+
+### Changed
+
+- `InstructionLifter::lift_arm` is now split into `lift_arm64` (real
+  lifter) and `lift_arm32` (still conservative, control-flow only).
+  ARMv7 gets the conservative path; AArch64 gets the full lifter.
+- The `Operand::imm` and `Operand::label` member names were renamed to
+  `imm_value` and `label_addr` in v0.0.1 to avoid clashing with the
+  factory methods of the same name. v0.0.2 keeps that change.
+- Output writers now pull the version string from `version.hpp` instead
+  of hardcoding "v0.0.1", so future bumps don't require touching three
+  source files.
+- `Symbol` gained two new fields (`ordinal`, `module`); existing code
+  that default-constructs `Symbol` is unaffected.
+
+### Fixed
+
+- **Bug**: Mach-O fixture generator had `sizeofcmds` patched at the wrong
+  offset (16 instead of 20), producing a header where `ncmds` was
+  accidentally set to the byte count of the load commands and
+  `sizeofcmds` stayed 0. Fixed by patching at offset 20. The bug was
+  masked in v0.0.1 because the x86-64 fixture's `ncmds=2` happened to
+  coincide with the parser's tolerance; the AArch64 fixture exposed it.
+- **Bug**: `InstructionLifter::parse_imm` used `std::stoll` which throws
+  `std::out_of_range` on 64-bit immediates like `0xffffffffffffffff`.
+  Switched to `std::stoull` with a try/catch, so the lifter no longer
+  aborts on full-range immediates.
+- **Bug**: `PeParser` had a duplicate `case IMAGE_FILE_MACHINE_MIPS:`
+  that shared a label with `IMAGE_FILE_MACHINE_R4000` (same value).
+  Removed the redundant case to silence the compiler warning.
+- **Bug**: text writer left sticky `std::hex` formatting on the stream
+  after printing raw bytes, corrupting the mnemonic column ("ret00000"
+  instead of "ret   "). Reset to `std::dec` / `std::setfill(' ')`
+  before the mnemonic.
+- **Bug**: `lift_arm` (now `lift_arm64`) used the unsupported C++ syntax
+  `if (m == "bl" && (auto t = ...))` which doesn't compile. Refactored
+  to a clean `std::optional<std::uint64_t> t = ...` form.
+
 ## [0.0.1] - 2026-07-05 - "Erebus"
 
 First public alpha. Establishes the project skeleton, the parser / lifter /

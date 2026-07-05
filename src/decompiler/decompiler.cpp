@@ -58,6 +58,8 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
         if (!file_buf) return {};
         for (const auto& s : bin.sections) {
             if (!s.executable) continue;
+            // SHT_NOBITS (.bss) has no file backing - never dereference.
+            if (s.is_nobits) continue;
             if (addr >= s.vaddr && addr < s.vaddr + s.file_size) {
                 const std::size_t off = static_cast<std::size_t>(s.file_off + (addr - s.vaddr));
                 if (off >= file_buf->size()) return {};

@@ -7,6 +7,7 @@
 
 #include "nyx/core/arch.hpp"
 #include "nyx/core/bytes.hpp"
+#include "nyx/version.hpp"
 
 #include <iomanip>
 #include <sstream>
@@ -22,7 +23,7 @@ void write_text(std::ostream& os,
                 const BinaryInfo& bin,
                 const std::vector<std::vector<DecodedInstruction>>& sections) {
     os << "================================================================================\n";
-    os << " Nyx v0.0.1 - text dump of " << bin.path << "\n";
+    os << " Nyx v" << VERSION_STRING << " - text dump of " << bin.path << "\n";
     os << "================================================================================\n";
     os << " Format     : " << to_string(bin.format) << "\n";
     os << " Arch       : " << arch_pretty(bin.arch) << " (" << arch_name(bin.arch) << ")\n";
