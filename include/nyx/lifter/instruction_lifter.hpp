@@ -1,0 +1,64 @@
+// =============================================================================
+// Nyx - A headless decompilation engine
+// Copyright (C) 2024-2026 Chapzoo  <https://github.com/Chapzoo>
+// SPDX-License-Identifier: GPL-3.0-or-later
+// =============================================================================
+#pragma once
+
+#include "nyx/core/arch.hpp"
+#include "nyx/core/types.hpp"
+#include "nyx/lifter/cfg.hpp"
+#include "nyx/lifter/ir.hpp"
+#include "nyx/parsers/disassembler.hpp"
+
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace nyx {
+
+/// Maps a single decoded machine instruction to one or more IR
+/// instructions. The v0.0.1 lifter is intentionally conservative:
+///
+///   * x86/x86-64 common forms (mov, add, sub, xor, push, pop, lea,
+///     jmp, call, ret, jcc, cmp, test) are translated fully.
+///   * ARM/AARCH64 data-processing and branch mnemonics are translated
+///     using a mnemonic-string fallback (covers the common cases).
+///   * PPC / MIPS use the generic mnemonic fallback (Opaque node).
+///   * Anything not recognised becomes `OpCode::Opaque` so the downstream
+///     decompiler never silently drops instructions.
+///
+/// The lifter keeps a per-function register map (machine reg -> vreg).
+class InstructionLifter {
+public:
+    InstructionLifter(Arch arch, Endian endian);
+
+    /// Lifts a sequence of decoded instructions into IR. The first
+    /// instruction's address becomes the function's entry.
+    [[nodiscard]] ir::Function lift_function(
+        const std::vector<DecodedInstruction>& insns,
+        std::string name = {},
+        std::uint64_t forced_entry = 0) const;
+
+    /// Lifts a single instruction. Exposed for unit tests.
+    [[nodiscard]] std::vector<ir::Instruction> lift_one(const DecodedInstruction& insn) const;
+
+private:
+    Arch    arch_;
+    Endian  endian_;
+
+    // Per-function vreg allocator state - reset on every lift_function call.
+    // Kept mutable here so lift_one (logically const) can re-use the same
+    // machinery without exposing allocation state to callers.
+    mutable std::unordered_map<std::uint32_t, ir::VReg> reg_map_;
+    mutable ir::VReg next_vreg_ = 1;
+
+    [[nodiscard]] ir::VReg map_reg(std::uint32_t machine_reg) const;
+    [[nodiscard]] ir::Operand lift_operand_x86(const DecodedInstruction& insn, int op_index) const;
+    [[nodiscard]] std::vector<ir::Instruction> lift_x86(const DecodedInstruction& insn) const;
+    [[nodiscard]] std::vector<ir::Instruction> lift_arm(const DecodedInstruction& insn) const;
+    [[nodiscard]] std::vector<ir::Instruction> lift_generic(const DecodedInstruction& insn) const;
+};
+
+}  // namespace nyx

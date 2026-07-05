@@ -1,0 +1,82 @@
+// =============================================================================
+// Nyx - A headless decompilation engine
+// Copyright (C) 2024-2026 Chapzoo  <https://github.com/Chapzoo>
+// SPDX-License-Identifier: GPL-3.0-or-later
+// =============================================================================
+#pragma once
+
+#include "nyx/core/arch.hpp"
+#include "nyx/core/bytes.hpp"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace nyx {
+
+/// File format detected by the magic-bytes probe in BinaryParser::detect.
+enum class BinaryFormat : std::uint8_t {
+    Unknown = 0,
+    Elf,
+    Pe,
+    MachO,
+};
+
+[[nodiscard]] std::string_view to_string(BinaryFormat f) noexcept;
+[[nodiscard]] std::optional<BinaryFormat> format_from_name(std::string_view s) noexcept;
+
+/// Generic section/segment descriptor produced by every parser.
+struct Section {
+    std::string  name;            // ".text", ".data", ".rdata", ".__TEXT" ...
+    std::uint64_t vaddr      = 0; // virtual address (file layout for PE)
+    std::uint64_t file_off   = 0; // offset inside the file
+    std::uint64_t file_size  = 0; // raw size on disk
+    std::uint64_t mem_size   = 0; // virtual size (can differ from file_size)
+    std::uint32_t flags      = 0; // parser-specific bitfield
+    bool         executable  = false;
+    bool         writable    = false;
+    bool         readable    = true;
+    bool         is_code     = false;     // parser hints (e.g. SHF_EXECINSTR)
+};
+
+/// Generic symbol descriptor.
+struct Symbol {
+    std::string   name;
+    std::uint64_t value = 0;        // address or offset
+    std::uint64_t size  = 0;
+    enum class Kind : std::uint8_t { Unknown, Function, Object, Section, File } kind = Kind::Unknown;
+    bool          imported = false;
+    bool          exported = false;
+};
+
+/// Result of parsing: a uniform view over the binary, format-agnostic.
+struct BinaryInfo {
+    std::string       path;
+    BinaryFormat      format       = BinaryFormat::Unknown;
+    Arch              arch         = Arch::Unknown;
+    Endian            endian       = Endian::Little;
+    bool              is_64bit     = false;
+    bool              is_pie       = false;
+    bool              has_nx       = false;       // NX bit / DEP
+    bool              has_relro    = false;
+    bool              has_canary   = false;
+    bool              stripped     = false;
+
+    std::uint64_t     entry_point = 0;
+    std::uint64_t     image_base  = 0;           // PE only; 0 for ELF/Mach-O
+
+    std::vector<Section> sections;
+    std::vector<Symbol>  symbols;
+
+    /// Returns the first executable section (typically .text or __TEXT).
+    [[nodiscard]] const Section* code_section() const noexcept;
+
+    /// Looks up a section by name (case-sensitive).
+    [[nodiscard]] const Section* find_section(std::string_view name) const noexcept;
+
+    /// Looks up a symbol by exact name.
+    [[nodiscard]] const Symbol* find_symbol(std::string_view name) const noexcept;
+};
+
+}  // namespace nyx

@@ -1,0 +1,110 @@
+# =============================================================================
+# Nyx CI workflow
+#
+# Runs on every push and pull request to main/develop. Verifies that the
+# project builds cleanly with sanitizers enabled and that all tests pass on
+# a fresh Debian 13 container. Mirrors what scripts/verify.sh does locally.
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main, develop, "release/**"]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & test (Debian 13, GCC, ASan+UBSan)
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+              build-essential \
+              cmake \
+              git \
+              python3 \
+              ca-certificates \
+              pkg-config
+
+      - name: Check out Nyx
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DNYX_ENABLE_SANITIZERS=ON \
+              -DNYX_WERROR=ON
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Build test fixtures
+        run: |
+          cd tests/fixtures
+          ./build.sh
+
+      - name: Run unit tests
+        run: ./build/bin/nyx_unit_tests --no-colors=1
+
+      - name: Run integration tests
+        run: ./build/bin/nyx_integration_tests --no-colors=1
+
+      - name: Smoke test (--version)
+        run: ./build/bin/nyx --version
+
+      - name: Smoke test (JSON on sample.elf)
+        run: ./build/bin/nyx --format json --log-level error tests/fixtures/sample.elf >/dev/null
+
+      - name: Smoke test (pseudo-C on sample.elf)
+        run: ./build/bin/nyx --format pseudo-c --log-level error tests/fixtures/sample.elf >/dev/null
+
+      - name: Smoke test (text on sample.macho)
+        run: ./build/bin/nyx --format text --log-level error tests/fixtures/sample.macho >/dev/null
+
+  build-release:
+    name: Build (Release, no sanitizers)
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+
+    steps:
+      - name: Install system dependencies
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+              build-essential \
+              cmake \
+              git \
+              python3 \
+              ca-certificates
+
+      - name: Check out Nyx
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure (Release)
+        run: |
+          cmake -S . -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DNYX_ENABLE_SANITIZERS=OFF \
+              -DNYX_WERROR=ON
+
+      - name: Build
+        run: cmake --build build -j"$(nproc)"
+
+      - name: Build fixtures and run tests
+        run: |
+          cd tests/fixtures && ./build.sh && cd ../..
+          ./build/bin/nyx_unit_tests --no-colors=1
+          ./build/bin/nyx_integration_tests --no-colors=1
