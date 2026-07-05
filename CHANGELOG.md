@@ -6,6 +6,127 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.0.3] - 2026-07-06
+
+Lifter expansion: real x86/x86-64, ARM32, PowerPC and MIPS lifters;
+heuristic function detection via prologue scanning; structured pseudo-C
+if/else hints; shared operand parser across all architectures.
+
+### Added
+
+- **x86/x86-64 lifter rewrite** (`InstructionLifter::lift_x86`): the ad-hoc
+  inline operand parser from v0.0.1 has been replaced with a clean
+  implementation built on the new shared `parse_operand` / `parse_mem_operand`
+  helpers. Coverage now includes `mov`/`movzx`/`movsx`/`movsxd` (with
+  reg-reg, reg-imm, reg-mem and mem-reg forms), `lea`, `add`/`sub`/`imul`/
+  `mul`/`div`/`idiv`, `and`/`or`/`xor`/`shl`/`sal`/`shr`/`sar`, `inc`/
+  `dec`/`neg`/`not`, `push`/`pop`, `cmp`/`test`, `jmp`/`jcc`, `call`,
+  `ret`/`retn`/`retq`, `leave`, `syscall`/`int`, plus all size variants
+  (`movb`/`movw`/`movl`/`movq`). Memory operands with size overrides
+  (`dword ptr [...]`) are now handled correctly. `mov reg, [mem]` is
+  correctly lifted as `OpCode::Load` instead of `OpCode::Mov`.
+- **ARM32 lifter rewrite** (`InstructionLifter::lift_arm32`): real operand
+  parser covering `mov`/`movw`/`movt`/`mvn`/`neg`/`rsb`, `add`/`sub`/`mul`/
+  `and`/`orr`/`eor`/`lsl`/`lsr`/`asr`, `ldr`/`ldrb`/`ldrh`/`ldrd`, `str`/
+  `strb`/`strh`/`strd`, `cmp`/`cmn`/`tst`, `b`/`bl`/`bx`/`blx`, `b.<cond>`,
+  `cbz`/`cbnz`, `push`/`pop`, `nop`. Anything else falls back to `Opaque`.
+- **PowerPC 32/64 lifter** (`InstructionLifter::lift_ppc`): basic coverage of
+  `add`/`addi`/`addis`/`li`/`lis`, `sub`/`subf`/`subfic`, `mullw`/`mulli`/
+  `mulhw`, `divw`/`divwu`/`divd`, `and`/`andc`, `or`/`mr`/`orc`, `xor`/`eqv`,
+  `slw`/`sld`, `srw`/`srd`, `sraw`/`srad`, `lwz`/`lhz`/`lbz`/`ld`/`lwa`,
+  `stw`/`sth`/`stb`/`std`, `cmp`/`cmpl`/`cmpw`/`cmplw`/`cmpi`/`cmpli`,
+  `b`/`bl`/`bla`, `bc`/`bclr`/`bcctr`, `blr` (return), `sc`, `nop`, `mflr`,
+  `rlwinm`/`slwi`/`srwi` (approximated as shifts). PPC `crf` field in `cmp`
+  is skipped automatically.
+- **MIPS 32/64 lifter** (`InstructionLifter::lift_mips`): basic coverage of
+  `addiu`/`addi`/`addu`/`add`, `subu`/`sub`, `mult`/`multu`/`mul`, `div`/
+  `divu`, `and`/`andi`, `or`/`ori`, `xor`/`xori`, `nor`, `sll`/`sllv`/
+  `srl`/`srlv`/`sra`/`srav`, `lw`/`lh`/`lb`/`lhu`/`lbu`/`lwc1`/`ldc1`,
+  `sw`/`sh`/`sb`/`swc1`/`sdc1`, `beq`/`bne`/`bgtz`/`blez`/`bltz`/`bgez`,
+  `j`/`jal`/`jr`/`jalr`, `lui` (with 16-bit shift), `slt`/`slti`/`sltu`/
+  `sltiu`, `movz`/`movn`, `nop`/`ssnop`, `syscall`/`break`. `jr $ra` is
+  correctly lifted as `OpCode::Return`; `jr` to any other register stays
+  `Opaque`. `beq`/`bne` conditional branches extract the target from the
+  last operand (Capstone places it third) instead of relying on
+  `direct_target()` which expects the target first.
+- **FunctionDetector** (`include/nyx/decompiler/function_detector.hpp`): a
+  new module that scans a linear-sweep disassembly looking for well-known
+  function prologue patterns. Supported prologues:
+  - x86/x86-64: `endbr64; push rbp`, `push rbp`/`push ebp`/`push rbx`,
+    `sub rsp, imm`
+  - AArch64: `stp x29, x30, [sp, ...]`, `stp fp, lr, [sp, ...]`,
+    `sub sp, sp, #imm`, `mov x29, sp`
+  - ARM32: `push {... lr}`, `sub sp, sp, #imm`, `mov fp, sp`, `stmfd sp!, {... lr}`
+  - PowerPC: `stwu r1, -imm(r1)`, `mflr r0`, `stw r0, imm(r1)`
+  - MIPS: `addiu $sp, $sp, -imm`, `sw $ra, imm($sp)`, `sw $fp, imm($sp)`,
+    `daddiu $sp, $sp, -imm`
+  The Decompiler now uses FunctionDetector when no function symbols exist:
+  each prologue candidate becomes a function whose body extends to the next
+  candidate. Functions are named `sub_<hex_addr>`.
+- **Shared operand parser**: `split_ops`, `parse_imm`, `is_imm_token`,
+  `is_mem_token`, `parse_mem_operand` and `parse_operand` are now free
+  functions in an anonymous namespace, reused by all five architecture
+  lifters. This eliminates ~200 lines of duplicated code and ensures
+  consistent operand handling across architectures. The parser now
+  recognises MIPS/PPC `disp(reg)` memory syntax in addition to x86/ARM
+  `[base+disp]` syntax.
+- **Structured pseudo-C if/else hints**: `render_pseudo_c` now detects the
+  classic if/else diamond pattern (BranchCond whose target also branches
+  to the same join block as the fall-through) and annotates the BranchCond
+  with a `// else-branch` comment so readers can spot the structure.
+  Full structured `if/else` reconstruction (without gotos) is still on
+  the v0.1.0 roadmap.
+- **MIPS32 and PPC32 ELF fixtures**: `tests/fixtures/gen_mips_elf.py` and
+  `gen_ppc_elf.py` generate minimal big-endian ELF executables with a tiny
+  `.text` section. The MIPS fixture has 7 instructions (`addiu`/`sw`/`jal`/
+  `nop`/`lw`/`jr`/`nop`); the PPC fixture has 8 (`stwu`/`mflr`/`stw`/`addi`/
+  `lwz`/`mtlr`/`addi`/`blr`).
+- **46 new tests**: 15 unit tests for the x86 lifter, 10 for ARM32, 10 for
+  PPC, 11 for MIPS, plus 7 integration tests covering the MIPS/PPC ELF
+  pipelines, the FunctionDetector on every supported architecture, and the
+  pseudo-C if/else pattern. Test count: 106 unit + 24 integration
+  (was 60 + 17).
+
+### Changed
+
+- `InstructionLifter::lift_arm` (v0.0.2) is now split into `lift_arm64`
+  (real lifter, unchanged behaviour) and `lift_arm32` (real lifter, was
+  conservative). Both use the shared operand parser.
+- `lift_operand_x86` (the sentinel stub from v0.0.1) has been removed.
+- The Decompiler's linear-sweep fallback now disassembles the entire `.text`
+  section (capped at 20 000 instructions) and runs FunctionDetector over
+  the result, instead of treating the whole section as a single function.
+- `parse_mem_operand` now handles the `disp(reg)` form used by MIPS and
+  PowerPC, in addition to the `[base+disp]` form used by x86 and ARM.
+- Output writers and `nyx --version` now report `0.0.3`.
+
+### Fixed
+
+- **Bug**: `mov reg, [mem]` on x86/x86-64 was lifted as `OpCode::Mov` with
+  a memory source, which produced nonsensical pseudo-C (`v1 = *(...)(...)`
+  instead of `v1 = *(...)(...)` via Load). Now correctly lifted as
+  `OpCode::Load`.
+- **Bug**: `parse_mem_operand` did not recognise memory operands where the
+  displacement precedes the register in parentheses (`0x10($sp)` /
+  `0x14(r1)`), causing MIPS `sw`/`lw` and PPC `lwz`/`stw` to be lifted as
+  Opaque. The parser now splits on `(` and treats the prefix as the
+  displacement.
+- **Bug**: `parse_mem_operand` did not strip the `#` prefix from ARM/MIPS
+  immediate displacements inside brackets (`[x1, #0x10]`), so the
+  displacement was treated as a register name. Now correctly parsed.
+- **Bug**: MIPS `beq`/`bne` conditional branches were always lifted as
+  `Opaque` because `DecodedInstruction::direct_target()` requires the
+  target to be the first operand (it is the third for MIPS). The lifter
+  now falls back to parsing the last operand as the target.
+- **Bug**: `FunctionDetector::is_x86_prologue` flagged `mov rbp, rsp` as a
+  function start, but that instruction is the *second* instruction of the
+  canonical x86 prologue, not the first. This caused false positives in the
+  middle of functions. The detector no longer flags standalone
+  `mov rbp, rsp`.
+- **Bug**: `parse_operand` did not recognise `disp(reg)` as a memory
+  operand (only `[...]` and leading `(...)`), so MIPS/PPC load/store
+  operands were treated as registers.
+
 ## [0.0.2] - 2026-07-05
 
 Robustness pass: real ARM64 lifter, multi-slice fat archives, BSS-aware ELF

@@ -14,7 +14,7 @@ interactive one.
 
 - **Author:** Chapzoo
 - **License:** GNU GPL v3.0 or later
-- **Status:** v0.0.1 - early alpha, see the [Roadmap](#roadmap) below
+- **Status:** v0.0.3 - early alpha, see the [Roadmap](#roadmap) below
 - **Repository:** <https://github.com/Chapzoo/nyx>
 
 ---
@@ -59,34 +59,46 @@ to be the right tool for the cases where you do not need Ghidra.
 
 ## Features
 
-### v0.0.1
+### v0.0.3 (current)
 
 - **Three binary formats** parsed natively in C++20 (no libelf, no
   libpe, no libmacho dependency):
   - **ELF** - 32 and 64 bit, little and big endian. Symbol table
-    (.symtab and .dynsym), section flags, NX / RELRO detection.
+    (.symtab and .dynsym), section flags, NX / RELRO detection,
+    BSS-aware (`SHT_NOBITS` sections marked `is_nobits`).
   - **PE / PE32+** - COFF header, optional header, section table,
-    export directory, import descriptor table (limited). PIE / NX
-    detection via DLL characteristics.
+    export directory, import descriptor table (with ordinal imports).
+    PIE / NX detection via DLL characteristics.
   - **Mach-O** - 32 and 64 bit, little and big endian, fat/universal
-    archives included. LC_SEGMENT / LC_SEGMENT_64, LC_SYMTAB, LC_MAIN.
-- **Six architectures** through Capstone v5.0.3:
-  - Intel x86 (32-bit)
-  - Intel x86-64
-  - ARM (A32 / Thumb)
-  - AArch64
-  - PowerPC (32-bit and 64-bit)
-  - MIPS (32-bit and 64-bit)
+    archives (all slices parsed, exposed via `BinaryInfo::slices`).
+    LC_SEGMENT / LC_SEGMENT_64, LC_SYMTAB, LC_MAIN.
+- **Six architectures** through Capstone v5.0.3, all with real lifters:
+  - Intel x86 (32-bit) - mov/add/sub/cmp/test/jmp/jcc/call/ret/push/
+    pop/lea/xor/and/or/shl/shr/imul/div/etc.
+  - Intel x86-64 - same as x86 plus 64-bit register handling.
+  - ARM (A32) - mov/add/sub/ldr/str/b/bl/bx/cmp/and/orr/eor/lsl/lsr/
+    asr/push/pop/etc.
+  - AArch64 - mov/movz/movk/add/sub/mul/ldr/ldr/str/stp/ldp/cmp/tst/
+    b/bl/blr/b.cond/cbz/cbnz/ret/etc.
+  - PowerPC (32-bit and 64-bit) - add/addi/sub/lwz/stw/b/bl/blr/cmp/
+    mflr/stwu/rlwinm/etc.
+  - MIPS (32-bit and 64-bit) - addiu/addu/subu/lw/sw/beq/bne/j/jal/jr/
+    lui/slt/and/or/xor/nor/sll/srl/sra/etc.
+- **Heuristic function detection** (`FunctionDetector`): scans stripped
+  binaries for well-known prologue patterns (push rbp; stp x29,x30;
+  stwu r1; addiu $sp) to find function entries without a symbol table.
 - **Lifter** to a small SSA-style IR with 24 opcodes covering data
   movement, arithmetic, comparison, control flow and an `Opaque`
   fallback for any instruction the lifter does not yet model.
 - **CFG builder** that splits instructions into basic blocks on
   terminators and on branch targets, with successor resolution.
 - **Three output formats**: JSON (stable schema, machine-readable),
-  plain text (human-readable listing), and pseudo-C source.
+  plain text (human-readable listing), and pseudo-C source with
+  if/else structure hints.
 - **CLI** with `--format`, `--output`, `--log-level`, `--arch`,
-  `--format-hint`, `--version`, `--help`.
-- **Test suite**: 50 unit tests + 11 integration tests, all green
+  `--format-hint`, `--version`, `--help`. Auto-detection logs the
+  inferred format/arch at INFO level.
+- **Test suite**: 106 unit tests + 24 integration tests, all green
   under ASan + UBSan.
 
 ## Supported architectures and formats
@@ -249,7 +261,7 @@ mnemonics.
 
 ### Pseudo-C
 
-A best-effort translation of the IR into C-like syntax. v0.0.1 emits
+A best-effort translation of the IR into C-like syntax. v0.0.3 emits
 one statement per IR instruction; type recovery, SSA deconstruction
 and structured control flow are explicitly future work.
 
@@ -273,7 +285,7 @@ diffing two builds of the same binary.
 
 ```
 ================================================================================
- Nyx v0.0.1 - text dump of ./sample.elf
+ Nyx v0.0.3 - text dump of ./sample.elf
 ================================================================================
  Format     : elf
  Arch       : Intel x86-64 (x86-64)
@@ -374,7 +386,7 @@ about coverage - if you see `// frobnicate rax, rbx` in the pseudo-C
 output, you know exactly which instruction wasn't lifted.
 
 The IR uses virtual registers (`VReg`) allocated per-function by the
-lifter. v0.0.1 does not perform SSA deconstruction, dominance or
+lifter. v0.0.3 does not perform SSA deconstruction, dominance or
 type recovery - every function is emitted as a single `void f(void)`
 block with `vN` placeholders. This keeps the surface honest about
 what is actually implemented vs. what is on the roadmap.
@@ -394,7 +406,7 @@ Three reasons:
    fully readable. Contributors don't need to learn a third-party
    API to debug format issues.
 
-The trade-off is parser maturity - the v0.0.1 parsers handle the
+The trade-off is parser maturity - the v0.0.3 parsers handle the
 common cases but don't yet cover every edge of the specifications
 (relocations, DWARF unwinding, CODE_SIGNATURE load commands, ...).
 These are roadmap items.
@@ -455,19 +467,22 @@ used, and informs the next one.
 Goal: a usable scaffold with a stable JSON schema and clean internal
 APIs. No promise of decompiler quality.
 
-- **v0.0.1** *(current)* - Initial public release. ELF / PE / Mach-O
-  parsing, multi-arch disassembly, conservative lifter with `Opaque`
-  fallback, JSON / text / pseudo-C output, full test suite.
-- **v0.0.2** - Robustness pass. Stricter PE import parsing
-  (bound imports, delay-load), Mach-O LC_DYSYMTAB, ELF relocations
-  for the disassembler, ASLR-aware address resolution. Add ARM and
-  AArch64 lifter coverage beyond the current mnemonic fallback.
-- **v0.0.3** - Type-shape detection. Use symbol sizes and section
+- **v0.0.1** - Initial public release. ELF / PE / Mach-O parsing,
+  multi-arch disassembly, conservative lifter with `Opaque` fallback,
+  JSON / text / pseudo-C output, full test suite.
+- **v0.0.2** - Robustness pass. Stricter PE import parsing (ordinal
+  imports), Mach-O LC_DYSYMTAB, ELF BSS handling, ARM64 lifter real,
+  fat archives multi-slice, structured pseudo-C if/else.
+- **v0.0.3** *(current)* - Lifter expansion. Real x86/x86-64, ARM32,
+  PowerPC and MIPS lifters; heuristic function detection via prologue
+  scanning; shared operand parser across all architectures; pseudo-C
+  if/else diamond hints; 46 new tests.
+- **v0.0.4** - Type-shape detection. Use symbol sizes and section
   flags to seed a primitive type lattice (ptr / int / func) so the
   pseudo-C output is less `void*`-heavy.
-- **v0.0.4** - Better CFG. Detect jump tables, switch on indirect
+- **v0.0.5** - Better CFG. Detect jump tables, switch on indirect
   branches, compute dominator tree and unreachable-block pruning.
-- **v0.0.5** - DWARF v4 line-table parsing for source attribution in
+- **v0.0.6** - DWARF v4 line-table parsing for source attribution in
   the JSON output.
 
 ### v0.x.0 - "Nyx" series (beta)
@@ -519,7 +534,7 @@ GitHub account:
 
 Future iterations will automate repository creation and code push
 through GitHub's REST API (the user already requested this for a
-later session - the v0.0.1 codebase is structured so that no project
+later session - the v0.0.3 codebase is structured so that no project
 metadata needs to change once that automation is wired up).
 
 ## Credits

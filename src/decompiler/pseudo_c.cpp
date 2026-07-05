@@ -154,43 +154,91 @@ std::string render_pseudo_c(const ir::Function& fn) {
         return s.str();
     };
 
+    // Detect whether block `i` ends with an unconditional Branch to `target`.
+    auto ends_with_branch_to = [&](std::size_t idx, std::uint64_t target) -> bool {
+        if (idx >= fn.blocks.size()) return false;
+        const auto& blk = fn.blocks[idx];
+        if (blk.instructions.empty()) return false;
+        const auto& last = blk.instructions.back();
+        return last.op == ir::OpCode::Branch
+            && !last.operands.empty()
+            && last.operands[0].kind == ir::Operand::Kind::Label
+            && last.operands[0].label_addr == target;
+    };
+
+    // Returns the BranchCond target if block `i` ends with one, else 0.
+    auto branch_cond_target = [&](std::size_t idx) -> std::uint64_t {
+        if (idx >= fn.blocks.size()) return 0;
+        const auto& blk = fn.blocks[idx];
+        if (blk.instructions.empty()) return 0;
+        const auto& last = blk.instructions.back();
+        if (last.op == ir::OpCode::BranchCond && last.operands.size() >= 2
+            && last.operands[1].kind == ir::Operand::Kind::Label) {
+            return last.operands[1].label_addr;
+        }
+        return 0;
+    };
+
     for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
         const auto& b = fn.blocks[i];
         os << "  // block " << i << " @ 0x" << std::hex << b.start_addr << std::dec << "\n";
         os << "  " << label(b.start_addr) << ":\n";
 
-        // Detect the if/else pattern: the block ends with BranchCond and the
-        // next instruction in the *same* block would be a Branch. Since our
-        // CFG splits terminators into their own block tails, the pattern is:
-        //   block[i] ends with BranchCond(cond, target_else)
-        //   block[i+1] (fall-through) is the "then" branch
-        // We emit the BranchCond as `if (cond) goto else_label;` and let the
-        // fall-through naturally represent the then-branch.
-        bool emitted_if = false;
         const ir::Instruction* last = b.instructions.empty() ? nullptr : &b.instructions.back();
+
+        // Detect if/else pattern: this block ends with BranchCond(cond, L_else),
+        // the fall-through block (i+1) is the "then", and the else block
+        // (L_else) also branches to the same "end" as the then-block. When
+        // we recognise this, we emit:
+        //   if (!cond) goto L_else;   // skip then when cond is false
+        //   { ... then-block ... }
+        //   goto L_end;
+        //   L_else: { ... else-block ... }
+        //   L_end:
+        // For v0.0.3 we keep the goto form (structured if/else reconstruction
+        // is on the v0.1.0 roadmap), but we emit the BranchCond as a clean
+        // `if (cond) goto L;` so the structure is readable.
 
         for (std::size_t k = 0; k < b.instructions.size(); ++k) {
             const auto& ins = b.instructions[k];
             const bool is_last = (k + 1 == b.instructions.size());
 
-            // If this is the BranchCond terminator of a block that has a
-            // single fall-through successor, emit it as `if (!cond) goto then;`
-            // style. The raw form is `if (cond) goto L_else;`.
             if (is_last && ins.op == ir::OpCode::BranchCond && ins.operands.size() >= 2
                 && ins.operands[1].kind == ir::Operand::Kind::Label) {
                 const auto target = ins.operands[1].label_addr;
-                os << "    if (" << render_operand(ins.operands[0])
-                   << ") goto " << label(target) << ";\n";
-                emitted_if = true;
+                // Check if this is a real if/else: the fall-through (i+1)
+                // and the branch target both end with Branch to the same
+                // join block. If so, hint it in a comment.
+                auto it = by_addr.find(target);
+                const auto else_idx = (it != by_addr.end()) ? it->second : fn.blocks.size();
+                const std::uint64_t then_end = (i + 1 < fn.blocks.size())
+                    ? branch_cond_target(i + 1)  // not quite; we want the Branch target
+                    : 0;
+                (void)then_end;
+                // The fall-through block's Branch target (if any) is the join.
+                std::uint64_t join = 0;
+                if (i + 1 < fn.blocks.size()) {
+                    const auto& fall = fn.blocks[i + 1];
+                    if (!fall.instructions.empty()) {
+                        const auto& flast = fall.instructions.back();
+                        if (flast.op == ir::OpCode::Branch && !flast.operands.empty()
+                            && flast.operands[0].kind == ir::Operand::Kind::Label) {
+                            join = flast.operands[0].label_addr;
+                        }
+                    }
+                }
+                if (else_idx < fn.blocks.size() && join != 0 && ends_with_branch_to(else_idx, join)) {
+                    os << "    if (" << render_operand(ins.operands[0])
+                       << ") goto " << label(target) << ";  // else-branch\n";
+                } else {
+                    os << "    if (" << render_operand(ins.operands[0])
+                       << ") goto " << label(target) << ";\n";
+                }
                 continue;
             }
-            // If this is a Branch that jumps backwards or far away, emit as
-            // `goto L;` (the fall-through case is implicit).
             if (is_last && ins.op == ir::OpCode::Branch && !ins.operands.empty()
                 && ins.operands[0].kind == ir::Operand::Kind::Label) {
                 const auto target = ins.operands[0].label_addr;
-                // Only emit an explicit goto when the target is NOT the very
-                // next block (which would be a redundant jump).
                 const auto it = by_addr.find(target);
                 const bool is_next_block = (it != by_addr.end() && it->second == i + 1);
                 if (!is_next_block) {
@@ -200,10 +248,7 @@ std::string render_pseudo_c(const ir::Function& fn) {
             }
             os << "    " << render_instruction(ins) << "\n";
         }
-        (void)emitted_if;
 
-        // Successor comment for blocks that don't terminate on a branch we
-        // already rendered (helps when reading the raw CFG).
         if (!b.successors.empty() && !(last && (last->op == ir::OpCode::Branch
                                               || last->op == ir::OpCode::BranchCond))) {
             os << "    // successors: ";

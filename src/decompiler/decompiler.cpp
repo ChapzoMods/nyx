@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // =============================================================================
 #include "nyx/decompiler/decompiler.hpp"
+#include "nyx/decompiler/function_detector.hpp"
 #include "nyx/decompiler/pseudo_c.hpp"
 
 #include "nyx/core/bytes.hpp"
@@ -106,7 +107,12 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
         out.push_back(std::move(df));
     }
 
-    // Linear sweep fallback when no function symbols were found.
+    // Heuristic function detection when no function symbols were found.
+    // We disassemble the whole .text section once, then run FunctionDetector
+    // over the linear sweep to find prologue candidates. Each candidate
+    // becomes a function whose body extends to the next candidate (or to the
+    // section end). When no prologues are detected, we fall back to a single
+    // linear-sweep function covering the whole section.
     if (out.empty() && opts_.linear_sweep_fallback) {
         const Section* text = bin.code_section();
         if (text && file_buf) {
@@ -114,19 +120,61 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
             if (off < file_buf->size()) {
                 const std::size_t n = std::min(text->file_size, file_buf->size() - off);
                 ByteView bytes{file_buf->data() + off, n};
-                auto insns = dis.decode(bytes, text->vaddr, opts_.max_insns_per_function);
-                if (!insns.empty()) {
-                    ir::Function fn = lifter.lift_function(insns, "linear_sweep", text->vaddr);
-                    DecompiledFunction df;
-                    df.name        = fn.name;
-                    df.entry       = fn.entry;
-                    df.block_count = fn.block_count();
-                    df.insn_count  = fn.instruction_count();
-                    std::string body = render_pseudo_c(fn);
-                    std::istringstream iss(body);
-                    std::string line;
-                    while (std::getline(iss, line)) df.lines.push_back(line);
-                    out.push_back(std::move(df));
+                // Full-section disassembly (capped to avoid pathological cases).
+                auto sweep = dis.decode(bytes, text->vaddr,
+                                        std::min<std::size_t>(opts_.max_insns_per_function * 4, 20000));
+
+                FunctionDetector detector(bin.arch);
+                auto candidates = detector.detect(sweep);
+
+                if (candidates.empty()) {
+                    // No prologues found - emit one linear-sweep function.
+                    if (!sweep.empty()) {
+                        ir::Function fn = lifter.lift_function(sweep, "linear_sweep", text->vaddr);
+                        DecompiledFunction df;
+                        df.name        = fn.name;
+                        df.entry       = fn.entry;
+                        df.block_count = fn.block_count();
+                        df.insn_count  = fn.instruction_count();
+                        std::string body = render_pseudo_c(fn);
+                        std::istringstream iss(body);
+                        std::string line;
+                        while (std::getline(iss, line)) df.lines.push_back(line);
+                        out.push_back(std::move(df));
+                    }
+                } else {
+                    // Slice the sweep at each candidate address and lift each
+                    // slice as its own function.
+                    for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+                        const auto start_addr = candidates[ci].address;
+                        const auto end_addr   = (ci + 1 < candidates.size())
+                                              ? candidates[ci + 1].address
+                                              : 0;  // 0 => until end
+                        std::vector<DecodedInstruction> slice;
+                        for (const auto& in : sweep) {
+                            if (in.address < start_addr) continue;
+                            if (end_addr != 0 && in.address >= end_addr) break;
+                            slice.push_back(in);
+                        }
+                        if (slice.empty()) continue;
+                        ir::Function fn;
+                        try {
+                            fn = lifter.lift_function(slice, candidates[ci].name, start_addr);
+                        } catch (const std::exception& e) {
+                            NYX_WARN("heuristic decompile of " + candidates[ci].name + " failed: " + e.what());
+                            continue;
+                        }
+                        DecompiledFunction df;
+                        df.name        = fn.name;
+                        df.entry       = fn.entry;
+                        df.block_count = fn.block_count();
+                        df.insn_count  = fn.instruction_count();
+                        std::string body = render_pseudo_c(fn);
+                        std::istringstream iss(body);
+                        std::string line;
+                        while (std::getline(iss, line)) df.lines.push_back(line);
+                        out.push_back(std::move(df));
+                    }
                 }
             }
         }

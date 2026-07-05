@@ -120,4 +120,10 @@ sys.stdout.buffer.write(macho)
 python3 gen_arm64_macho.py > "$OUT_DIR/sample.arm64.macho" 2>/dev/null \
     && echo "[fixtures] built sample.arm64.macho (hand-crafted, AArch64)"
 
+# v0.0.3: MIPS32 and PPC32 ELF fixtures (hand-crafted, big-endian).
+python3 gen_mips_elf.py > "$OUT_DIR/sample.mips.elf" 2>/dev/null \
+    && echo "[fixtures] built sample.mips.elf (hand-crafted, MIPS32 BE)"
+python3 gen_ppc_elf.py > "$OUT_DIR/sample.ppc.elf" 2>/dev/null \
+    && echo "[fixtures] built sample.ppc.elf (hand-crafted, PPC32 BE)"
+
 ls -la "$OUT_DIR"

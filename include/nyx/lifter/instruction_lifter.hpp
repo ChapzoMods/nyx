@@ -65,10 +65,11 @@ private:
     /// Maps a register name (e.g. "rax", "x0", "sp") to a stable VReg.
     /// Two calls with the same name return the same vreg.
     [[nodiscard]] ir::VReg map_reg_by_name(const std::string& name) const;
-    [[nodiscard]] ir::Operand lift_operand_x86(const DecodedInstruction& insn, int op_index) const;
     [[nodiscard]] std::vector<ir::Instruction> lift_x86(const DecodedInstruction& insn) const;
     [[nodiscard]] std::vector<ir::Instruction> lift_arm64(const DecodedInstruction& insn) const;
     [[nodiscard]] std::vector<ir::Instruction> lift_arm32(const DecodedInstruction& insn) const;
+    [[nodiscard]] std::vector<ir::Instruction> lift_ppc(const DecodedInstruction& insn) const;
+    [[nodiscard]] std::vector<ir::Instruction> lift_mips(const DecodedInstruction& insn) const;
     [[nodiscard]] std::vector<ir::Instruction> lift_generic(const DecodedInstruction& insn) const;
 };
 
