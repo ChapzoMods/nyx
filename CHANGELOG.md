@@ -6,6 +6,91 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.0.4] - 2026-07-06
+
+Type-shape detection, Graphviz DOT output, extended FunctionDetector, and
+a critical CFG builder fix.
+
+### Added
+
+- **TypeInferer** (`include/nyx/decompiler/type_inferer.hpp`): a new module
+  that walks an IR function and populates `Function::vreg_types` with
+  inferred primitive types. Strategy:
+  - `Mov` from an immediate infers `Int32` (or `Int64` if the value needs
+    more than 32 bits).
+  - `Mov` from a symbol infers from the symbol's size (1/2/4/8 -> Int8/
+    Int16/Int32/Int64); function symbols -> Func.
+  - `Load` uses the memory operand's `mem_size` hint; if absent and the
+    displacement matches a known symbol's address, infers from that
+    symbol's size.
+  - `BinOp` results take the wider of the two operand types.
+  - `Cmp` results are `Int32` (C int).
+  - `Pop` results are `Ptr` (pointer-sized).
+  - `Call` results default to `Int32`.
+  The inferer is conservative: vregs it can't classify stay `Unknown`
+  (renders as `void*`). It never asserts a wrong type.
+- **IR Type lattice** (`ir::Type`): `Unknown`, `Int8`, `Int16`, `Int32`,
+  `Int64`, `Ptr`, `Func`. Helpers `type_name`, `type_c_decl`,
+  `type_size` for rendering and sizing. `Function::vreg_types` is a
+  `std::unordered_map<VReg, Type>` populated by TypeInferer.
+- **Typed pseudo-C declarations**: `render_pseudo_c` now emits a block of
+  variable declarations at the top of every function, one per vreg,
+  using the inferred C type (`int v1;`, `char v2;`, `long long v3;`,
+  `void* v4;`). VRegs without an inferred type default to `void*`.
+- **DOT/Graphviz output** (`--format dot`): new output writer that
+  renders a function's CFG as a `digraph`. Each basic block is a node
+  whose label lists its IR instructions; edges are labelled `cond <vreg>`
+  for conditional branches, `fall-through` for implicit edges, or
+  unlabelled for unconditional jumps. Output is pipe-friendly to
+  `dot -Tpng` / `dot -Tsvg`. `nyx::output::write_dot` accepts a single
+  `ir::Function` or a vector (multiple functions wrap into one digraph).
+- **`Decompiler::decompile_ir`**: new method that returns the raw
+  `std::vector<ir::Function>` instead of pre-rendered pseudo-C lines.
+  Used by the DOT writer and available for downstream tooling.
+- **Extended FunctionDetector prologues**:
+  - ARM32: `stmfd sp!, {lr}`, `str lr, [sp, #-imm]!`, `add ip, sp, #imm`
+    (PIC prologue).
+  - PowerPC: `stwu` with any base register, `stfd` (FPR save).
+  - MIPS: `sw $gp, imm($sp)` (PIC), `lui $gp, %hi(...)` (PIC setup),
+    `sd $ra, imm($sp)` (MIPS64 doubleword save).
+- **Function end detection** (`FunctionDetector::find_function_end`):
+  walks forward from a candidate until it hits a return instruction
+  (`ret`, `blr`, `jr $ra`, `bx lr`, `pop {... pc}`) or the next prologue.
+  The Decompiler now uses this to bound function bodies in heuristic
+  mode, so padding / next-function code no longer leaks into the current
+  function's IR.
+- **28 new tests**: 7 TypeInferer unit tests, 5 DOT writer unit tests,
+  13 FunctionDetector v0.0.4 unit tests (new prologues + end detection),
+  5 v0.0.4 integration tests (dot on ARM64/ELF, type inference
+  end-to-end, typed pseudo-C, CLI `--format dot`). Test count:
+  133 unit + 29 integration (was 106 + 24).
+
+### Changed
+
+- `ir::Function` gained a `vreg_types` map; the Decompiler calls
+  `TypeInferer::infer` after every `lift_function`.
+- `render_pseudo_c` now emits a variable-declaration block before the
+  basic blocks.
+- The CLI help text lists `dot` as a valid `--format`.
+- Output writers and `nyx --version` now report `0.0.4`.
+
+### Fixed
+
+- **Critical bug**: `CFGBuilder::build` did not split basic blocks after
+  terminator instructions. A sequence like `cmp; BranchCond; mov; Branch;
+  ret` was being packed into a single basic block, which produced
+  nonsensical CFGs (no edges, wrong block boundaries) and made the DOT
+  output empty. The builder now marks the instruction after every
+  terminator (Branch / BranchCond / Return) as a leader, so each
+  terminator correctly ends its block. This was the single biggest
+  correctness issue in v0.0.3 and affects every architecture's CFG.
+- **Bug**: `FunctionDetector::is_x86_prologue` flagged `mov rbp, rsp`
+  as a prologue start; that instruction is the *second* instruction of
+  the canonical x86 prologue. Already fixed in v0.0.3; the v0.0.4
+  find_function_end logic additionally stops at the next prologue, so
+  even if a false positive slipped through, the function body would be
+  bounded correctly.
+
 ## [0.0.3] - 2026-07-06
 
 Lifter expansion: real x86/x86-64, ARM32, PowerPC and MIPS lifters;

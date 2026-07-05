@@ -7,9 +7,12 @@
 
 #include "nyx/core/bytes.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace nyx {
 
@@ -140,6 +143,36 @@ std::string render_pseudo_c(const ir::Function& fn) {
     os << "// Entry: 0x" << std::hex << fn.entry << std::dec << "\n";
     os << "// Blocks: " << fn.blocks.size() << "\n";
     os << "void " << (fn.name.empty() ? "sub" : fn.name) << "(void) {\n";
+
+    // v0.0.4: emit typed variable declarations for every vreg that has an
+    // inferred type. VRegs without a type are declared as `void*` (the
+    // conservative default) so every assignment has a valid LHS.
+    if (!fn.vreg_types.empty()) {
+        // Collect the set of vregs actually used in the function so we don't
+        // declare stale entries from a partial inference.
+        std::unordered_map<ir::VReg, bool> used;
+        for (const auto& b : fn.blocks) {
+            for (const auto& ins : b.instructions) {
+                if (ins.dst != ir::INVALID_VREG) used[ins.dst] = true;
+                for (const auto& op : ins.operands) {
+                    if (op.kind == ir::Operand::Kind::Register && op.vreg != ir::INVALID_VREG) {
+                        used[op.vreg] = true;
+                    }
+                }
+            }
+        }
+        // Emit declarations in vreg-id order for stable output.
+        std::vector<ir::VReg> sorted;
+        sorted.reserve(used.size());
+        for (const auto& [v, _] : used) sorted.push_back(v);
+        std::sort(sorted.begin(), sorted.end());
+        for (auto v : sorted) {
+            auto it = fn.vreg_types.find(v);
+            const ir::Type t = (it != fn.vreg_types.end()) ? it->second : ir::Type::Unknown;
+            os << "  " << ir::type_c_decl(t) << " v" << v << ";\n";
+        }
+        os << "\n";
+    }
 
     // Build a quick lookup: block start_addr -> index. Used to detect the
     // if/else pattern (BranchCond + fall-through Branch).

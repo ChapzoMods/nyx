@@ -25,6 +25,24 @@ constexpr VReg INVALID_VREG = 0xFFFFFFFFu;
 using VId = std::uint32_t;
 constexpr VId INVALID_VID = 0xFFFFFFFFu;
 
+/// Inferred primitive type for a virtual register. v0.0.4 introduces a
+/// conservative type lattice; the TypeInferer populates this based on
+/// symbol sizes and section flags. `Unknown` is the default for any vreg
+/// the inferer can't classify.
+enum class Type : std::uint8_t {
+    Unknown = 0,
+    Int8,    // char / signed char / unsigned char (1 byte)
+    Int16,   // short (2 bytes)
+    Int32,   // int / float (4 bytes)
+    Int64,   // long long / double (8 bytes)
+    Ptr,     // pointer (size = arch bitness / 8)
+    Func,    // function pointer
+};
+
+[[nodiscard]] std::string_view type_name(Type t) noexcept;
+[[nodiscard]] std::string_view type_c_decl(Type t) noexcept;
+[[nodiscard]] std::uint8_t type_size(Type t, std::uint8_t arch_bitness) noexcept;
+
 /// Operand of an IR instruction.
 struct Operand {
     enum class Kind : std::uint8_t {

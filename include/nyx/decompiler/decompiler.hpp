@@ -45,6 +45,11 @@ public:
     /// Decompile every code section of `bin`.
     [[nodiscard]] std::vector<DecompiledFunction> decompile(const BinaryInfo& bin) const;
 
+    /// v0.0.4: like `decompile` but returns the raw IR functions. Used by
+    /// output formats that need the CFG (e.g. dot) rather than the
+    /// pre-rendered pseudo-C lines.
+    [[nodiscard]] std::vector<ir::Function> decompile_ir(const BinaryInfo& bin) const;
+
     /// Decompile a single address range. Exposed for tests.
     [[nodiscard]] DecompiledFunction decompile_range(
         const BinaryInfo& bin,

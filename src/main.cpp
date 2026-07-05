@@ -25,6 +25,7 @@
 #include "nyx/output/json_writer.hpp"
 #include "nyx/output/pseudo_c_writer.hpp"
 #include "nyx/output/text_writer.hpp"
+#include "nyx/output/dot_writer.hpp"
 #include "nyx/parsers/binary_parser.hpp"
 #include "nyx/parsers/disassembler.hpp"
 
@@ -63,7 +64,7 @@ void print_help(std::ostream& os) {
        << "Options:\n"
        << "  -h, --help              Show this help and exit.\n"
        << "  -V, --version           Print the Nyx banner and exit.\n"
-       << "  -f, --format <fmt>      Output format: json | text | pseudo-c (default: json).\n"
+       << "  -f, --format <fmt>      Output format: json | text | pseudo-c | dot (default: json).\n"
        << "  -o, --output <path>     Write output to <path> instead of stdout.\n"
        << "  -L, --log-level <lvl>   trace|debug|info|warn|error|critical (default: info).\n"
        << "  -q, --quiet             Alias for --log-level critical.\n"
@@ -235,8 +236,13 @@ int main(int argc, char** argv) {
             nyx::output::write_text(*out, bin, disasm_sections);
         } else if (args.format == "pseudo-c" || args.format == "pseudoc" || args.format == "c") {
             nyx::output::write_pseudo_c(*out, bin, functions);
+        } else if (args.format == "dot") {
+            // DOT output needs the raw IR functions, not the pre-rendered
+            // pseudo-C lines. Re-decompile with decompile_ir().
+            auto ir_fns = dec.decompile_ir(bin);
+            nyx::output::write_dot(*out, ir_fns);
         } else {
-            std::cerr << "error: unknown --format '" << args.format << "'. Use json, text or pseudo-c.\n";
+            std::cerr << "error: unknown --format '" << args.format << "'. Use json, text, pseudo-c or dot.\n";
             return 1;
         }
         return 0;

@@ -68,17 +68,23 @@ Function CFGBuilder::build(std::vector<Instruction> insns, std::uint64_t forced_
     else                   fn.entry = forced_entry;
 
     // Collect branch targets so we know where to start new basic blocks.
+    // A "leader" is the first instruction of a basic block. Leaders are:
+    //   - the function entry
+    //   - any branch target (Branch / BranchCond operand)
+    //   - the instruction immediately after a terminator (Branch /
+    //     BranchCond / Return), because the terminator ends its block
     std::unordered_set<std::uint64_t> leaders;
     leaders.insert(fn.entry);
-    for (const auto& i : insns) {
-        if (i.op == OpCode::Branch || i.op == OpCode::BranchCond) {
-            for (const auto& op : i.operands) {
+    for (std::size_t i = 0; i < insns.size(); ++i) {
+        const auto& in = insns[i];
+        if (in.op == OpCode::Branch || in.op == OpCode::BranchCond) {
+            for (const auto& op : in.operands) {
                 if (op.kind == Operand::Kind::Label) leaders.insert(op.label_addr);
             }
         }
-        if (i.op == OpCode::Return) {
-            // fall-through becomes a leader if there is a next instruction.
-            // (leader for the *next* addr)
+        // After any terminator, the next instruction starts a new block.
+        if (in.is_terminator() && i + 1 < insns.size()) {
+            leaders.insert(insns[i + 1].addr);
         }
     }
 

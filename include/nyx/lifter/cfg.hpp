@@ -36,6 +36,10 @@ struct Function {
     std::vector<BasicBlock>  blocks;
     std::unordered_map<std::uint64_t, std::size_t> block_index;  // start_addr -> index in blocks
 
+    /// v0.0.4: inferred type per virtual register. Populated by TypeInferer
+    /// after the function is built. VRegs not present default to Type::Unknown.
+    std::unordered_map<VReg, Type> vreg_types;
+
     /// Finds or creates a block starting at `addr`. Returns its index.
     std::size_t ensure_block(std::uint64_t addr);
 

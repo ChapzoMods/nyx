@@ -6,6 +6,7 @@
 #include "nyx/decompiler/decompiler.hpp"
 #include "nyx/decompiler/function_detector.hpp"
 #include "nyx/decompiler/pseudo_c.hpp"
+#include "nyx/decompiler/type_inferer.hpp"
 
 #include "nyx/core/bytes.hpp"
 #include "nyx/core/logger.hpp"
@@ -86,7 +87,10 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
         try {
             insns = dis.decode(bytes, sym->value, opts_.max_insns_per_function);
             if (insns.empty()) ok = false;
-            else fn = lifter.lift_function(insns, sym->name, sym->value);
+            else {
+                fn = lifter.lift_function(insns, sym->name, sym->value);
+                TypeInferer(bin.arch, &bin).infer(fn);
+            }
         } catch (const std::exception& e) {
             NYX_WARN(std::string("decompile: function ") + sym->name + " failed: " + e.what());
             ok = false;
@@ -131,6 +135,7 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
                     // No prologues found - emit one linear-sweep function.
                     if (!sweep.empty()) {
                         ir::Function fn = lifter.lift_function(sweep, "linear_sweep", text->vaddr);
+                        TypeInferer(bin.arch, &bin).infer(fn);
                         DecompiledFunction df;
                         df.name        = fn.name;
                         df.entry       = fn.entry;
@@ -150,9 +155,18 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
                         const auto end_addr   = (ci + 1 < candidates.size())
                                               ? candidates[ci + 1].address
                                               : 0;  // 0 => until end
+                        // v0.0.4: use find_function_end to bound the slice
+                        // at the first return instruction, so we don't drag
+                        // padding / next-function code into this function.
                         std::vector<DecodedInstruction> slice;
-                        for (const auto& in : sweep) {
-                            if (in.address < start_addr) continue;
+                        std::size_t sweep_start_idx = 0;
+                        // Find the sweep index of the candidate.
+                        for (; sweep_start_idx < sweep.size(); ++sweep_start_idx) {
+                            if (sweep[sweep_start_idx].address >= start_addr) break;
+                        }
+                        const std::size_t sweep_end_idx = detector.find_function_end(sweep, sweep_start_idx);
+                        for (std::size_t si = sweep_start_idx; si < sweep_end_idx && si < sweep.size(); ++si) {
+                            const auto& in = sweep[si];
                             if (end_addr != 0 && in.address >= end_addr) break;
                             slice.push_back(in);
                         }
@@ -160,6 +174,7 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
                         ir::Function fn;
                         try {
                             fn = lifter.lift_function(slice, candidates[ci].name, start_addr);
+                            TypeInferer(bin.arch, &bin).infer(fn);
                         } catch (const std::exception& e) {
                             NYX_WARN("heuristic decompile of " + candidates[ci].name + " failed: " + e.what());
                             continue;
@@ -194,6 +209,7 @@ DecompiledFunction Decompiler::decompile_range(
 
     auto insns = dis.decode(bytes, start_addr, opts_.max_insns_per_function);
     ir::Function fn = lifter.lift_function(insns, std::move(name), start_addr);
+    TypeInferer(bin.arch, &bin).infer(fn);
 
     DecompiledFunction df;
     df.name        = fn.name;
@@ -205,6 +221,112 @@ DecompiledFunction Decompiler::decompile_range(
     std::string line;
     while (std::getline(iss, line)) df.lines.push_back(line);
     return df;
+}
+
+std::vector<ir::Function> Decompiler::decompile_ir(const BinaryInfo& bin) const {
+    std::vector<ir::Function> out;
+
+    Disassembler dis(bin.arch, bin.endian);
+    if (!dis.valid()) {
+        NYX_WARN("decompile_ir: no disassembler for arch " + std::string(arch_name(bin.arch)));
+        return out;
+    }
+
+    std::optional<ByteBuffer> file_buf;
+    if (!bin.path.empty()) file_buf = ByteBuffer::from_file(bin.path);
+
+    auto bytes_at = [&](std::uint64_t addr, std::size_t max) -> ByteView {
+        if (!file_buf) return {};
+        for (const auto& s : bin.sections) {
+            if (!s.executable) continue;
+            if (s.is_nobits) continue;
+            if (addr >= s.vaddr && addr < s.vaddr + s.file_size) {
+                const std::size_t off = static_cast<std::size_t>(s.file_off + (addr - s.vaddr));
+                if (off >= file_buf->size()) return {};
+                const std::size_t avail = file_buf->size() - off;
+                const std::size_t n = std::min(avail, max);
+                return ByteView{file_buf->data() + off, n};
+            }
+        }
+        return {};
+    };
+
+    InstructionLifter lifter(bin.arch, bin.endian);
+
+    std::vector<const Symbol*> funcs;
+    for (const auto& s : bin.symbols) {
+        if (s.kind == Symbol::Kind::Function && !s.imported) funcs.push_back(&s);
+    }
+    std::sort(funcs.begin(), funcs.end(),
+              [](const Symbol* a, const Symbol* b){ return a->value < b->value; });
+
+    for (const Symbol* sym : funcs) {
+        const std::size_t max_bytes = opts_.max_insns_per_function * 16;
+        ByteView bytes = bytes_at(sym->value, max_bytes);
+        if (bytes.empty()) continue;
+        try {
+            auto insns = dis.decode(bytes, sym->value, opts_.max_insns_per_function);
+            if (insns.empty()) continue;
+            auto fn = lifter.lift_function(insns, sym->name, sym->value);
+            TypeInferer(bin.arch, &bin).infer(fn);
+            out.push_back(std::move(fn));
+        } catch (const std::exception& e) {
+            NYX_WARN(std::string("decompile_ir: function ") + sym->name + " failed: " + e.what());
+        }
+    }
+
+    // Heuristic fallback when no symbols.
+    if (out.empty() && opts_.linear_sweep_fallback) {
+        const Section* text = bin.code_section();
+        if (text && file_buf) {
+            const std::size_t off = static_cast<std::size_t>(text->file_off);
+            if (off < file_buf->size()) {
+                const std::size_t n = std::min(text->file_size, file_buf->size() - off);
+                ByteView bytes{file_buf->data() + off, n};
+                auto sweep = dis.decode(bytes, text->vaddr,
+                                        std::min<std::size_t>(opts_.max_insns_per_function * 4, 20000));
+                FunctionDetector detector(bin.arch);
+                auto candidates = detector.detect(sweep);
+                if (candidates.empty()) {
+                    if (!sweep.empty()) {
+                        try {
+                            auto fn = lifter.lift_function(sweep, "linear_sweep", text->vaddr);
+                            TypeInferer(bin.arch, &bin).infer(fn);
+                            out.push_back(std::move(fn));
+                        } catch (const std::exception& e) {
+                            NYX_WARN(std::string("decompile_ir: linear sweep failed: ") + e.what());
+                        }
+                    }
+                } else {
+                    for (std::size_t ci = 0; ci < candidates.size(); ++ci) {
+                        const auto start_addr = candidates[ci].address;
+                        const auto end_addr = (ci + 1 < candidates.size())
+                            ? candidates[ci + 1].address : 0;
+                        std::size_t sweep_start = 0;
+                        for (; sweep_start < sweep.size(); ++sweep_start) {
+                            if (sweep[sweep_start].address >= start_addr) break;
+                        }
+                        const std::size_t sweep_end = detector.find_function_end(sweep, sweep_start);
+                        std::vector<DecodedInstruction> slice;
+                        for (std::size_t si = sweep_start; si < sweep_end && si < sweep.size(); ++si) {
+                            if (end_addr != 0 && sweep[si].address >= end_addr) break;
+                            slice.push_back(sweep[si]);
+                        }
+                        if (slice.empty()) continue;
+                        try {
+                            auto fn = lifter.lift_function(slice, candidates[ci].name, start_addr);
+                            TypeInferer(bin.arch, &bin).infer(fn);
+                            out.push_back(std::move(fn));
+                        } catch (const std::exception& e) {
+                            NYX_WARN(std::string("decompile_ir: ") + candidates[ci].name + " failed: " + e.what());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return out;
 }
 
 }  // namespace nyx

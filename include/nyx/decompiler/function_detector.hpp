@@ -46,6 +46,15 @@ public:
     /// instruction address that looks like a function prologue start.
     [[nodiscard]] std::vector<Candidate> detect(const std::vector<DecodedInstruction>& insns) const;
 
+    /// v0.0.4: returns the index of the next "function end" instruction
+    /// at or after `start_idx` in `insns`. A function end is a return
+    /// instruction (ret / blr / jr $ra / bx lr / leave+ret) followed by
+    /// either padding or a prologue. Returns insns.size() if no end is
+    /// found. Callers use this to bound the body of a function detected
+    /// by `detect()`.
+    [[nodiscard]] std::size_t find_function_end(const std::vector<DecodedInstruction>& insns,
+                                                 std::size_t start_idx) const;
+
 private:
     Arch arch_;
 
@@ -54,6 +63,10 @@ private:
     [[nodiscard]] bool is_arm32_prologue(const DecodedInstruction& first, const DecodedInstruction* second) const;
     [[nodiscard]] bool is_ppc_prologue(const DecodedInstruction& first, const DecodedInstruction* second) const;
     [[nodiscard]] bool is_mips_prologue(const DecodedInstruction& first, const DecodedInstruction* second) const;
+
+    /// v0.0.4: returns true if the instruction is a function-return
+    /// terminator for the configured architecture.
+    [[nodiscard]] bool is_return(const DecodedInstruction& insn) const;
 };
 
 }  // namespace nyx

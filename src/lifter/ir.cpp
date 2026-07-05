@@ -40,4 +40,43 @@ std::string_view op_name(OpCode op) noexcept {
     return "?";
 }
 
+std::string_view type_name(Type t) noexcept {
+    switch (t) {
+        case Type::Unknown: return "unknown";
+        case Type::Int8:    return "i8";
+        case Type::Int16:   return "i16";
+        case Type::Int32:   return "i32";
+        case Type::Int64:   return "i64";
+        case Type::Ptr:     return "ptr";
+        case Type::Func:    return "func";
+    }
+    return "unknown";
+}
+
+std::string_view type_c_decl(Type t) noexcept {
+    switch (t) {
+        case Type::Unknown: return "void*";
+        case Type::Int8:    return "char";
+        case Type::Int16:   return "short";
+        case Type::Int32:   return "int";
+        case Type::Int64:   return "long long";
+        case Type::Ptr:     return "void*";
+        case Type::Func:    return "void (*)(void)";
+    }
+    return "void*";
+}
+
+std::uint8_t type_size(Type t, std::uint8_t arch_bitness) noexcept {
+    switch (t) {
+        case Type::Unknown: return 0;
+        case Type::Int8:    return 1;
+        case Type::Int16:   return 2;
+        case Type::Int32:   return 4;
+        case Type::Int64:   return 8;
+        case Type::Ptr:     return arch_bitness == 64 ? 8 : (arch_bitness == 32 ? 4 : 0);
+        case Type::Func:    return arch_bitness == 64 ? 8 : (arch_bitness == 32 ? 4 : 0);
+    }
+    return 0;
+}
+
 }  // namespace nyx::ir
