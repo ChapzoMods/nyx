@@ -109,14 +109,24 @@ std::string render_instruction(const ir::Instruction& i) {
                << " == " << render_operand(i.operands[1]) << ");";
             break;
         case ir::OpCode::Branch:
-            os << "goto " << render_operand(i.operands[0]) << ";";
+            if (i.indirect) {
+                os << "// indirect branch via " << render_operand(i.operands[0]) << "\n";
+                os << "    goto *(" << render_operand(i.operands[0]) << ");  // indirect";
+            } else {
+                os << "goto " << render_operand(i.operands[0]) << ";";
+            }
             break;
         case ir::OpCode::BranchCond:
             os << "if (" << render_operand(i.operands[0]) << ") goto "
                << render_operand(i.operands[1]) << ";";
             break;
         case ir::OpCode::Call:
-            os << "call(" << render_operand(i.operands[0]) << ");";
+            if (i.indirect) {
+                os << "// indirect call via " << render_operand(i.operands[0]) << "\n";
+                os << "    call(*(" << render_operand(i.operands[0]) << "));  // indirect";
+            } else {
+                os << "call(" << render_operand(i.operands[0]) << ");";
+            }
             break;
         case ir::OpCode::Return:
             os << "return;";
@@ -290,6 +300,157 @@ std::string render_pseudo_c(const ir::Function& fn) {
                 os << label(b.successors[j]);
             }
             os << "\n";
+        }
+    }
+    os << "}\n";
+    return os.str();
+}
+
+std::string render_pseudo_c(const ir::Function& fn,
+                            const ir::DominatorAnalysis& dom,
+                            const std::vector<ir::NaturalLoop>& loops) {
+    // For v0.0.5 we add loop annotations: when a block is a loop header,
+    // we emit a `while (1) {` comment before it, and when we see the back
+    // edge (the latch block), we emit `continue;` instead of the goto.
+    // Full structured loop reconstruction is on the v0.1.0 roadmap.
+
+    // Build loop-header lookup.
+    std::unordered_map<std::size_t, const ir::NaturalLoop*> loop_by_header;
+    std::unordered_map<std::size_t, const ir::NaturalLoop*> loop_by_latch;
+    for (const auto& l : loops) {
+        loop_by_header[l.header] = &l;
+        loop_by_latch[l.latch] = &l;
+    }
+
+    std::ostringstream os;
+    os << "// Function: " << (fn.name.empty() ? "sub" : fn.name) << "\n";
+    os << "// Entry: 0x" << std::hex << fn.entry << std::dec << "\n";
+    os << "// Blocks: " << fn.blocks.size() << "\n";
+    if (!loops.empty()) {
+        os << "// Loops: " << loops.size() << "\n";
+    }
+    os << "void " << (fn.name.empty() ? "sub" : fn.name) << "(void) {\n";
+
+    // Typed variable declarations (v0.0.4).
+    if (!fn.vreg_types.empty()) {
+        std::unordered_map<ir::VReg, bool> used;
+        for (const auto& b : fn.blocks) {
+            for (const auto& ins : b.instructions) {
+                if (ins.dst != ir::INVALID_VREG) used[ins.dst] = true;
+                for (const auto& op : ins.operands) {
+                    if (op.kind == ir::Operand::Kind::Register && op.vreg != ir::INVALID_VREG) {
+                        used[op.vreg] = true;
+                    }
+                }
+            }
+        }
+        std::vector<ir::VReg> sorted;
+        sorted.reserve(used.size());
+        for (const auto& [v, _] : used) sorted.push_back(v);
+        std::sort(sorted.begin(), sorted.end());
+        for (auto v : sorted) {
+            auto it = fn.vreg_types.find(v);
+            const ir::Type t = (it != fn.vreg_types.end()) ? it->second : ir::Type::Unknown;
+            os << "  " << ir::type_c_decl(t) << " v" << v << ";\n";
+        }
+        os << "\n";
+    }
+
+    std::unordered_map<std::uint64_t, std::size_t> by_addr;
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
+        by_addr[fn.blocks[i].start_addr] = i;
+    }
+
+    auto label = [](std::uint64_t a) {
+        std::ostringstream s;
+        s << "L_" << std::hex << a << std::dec;
+        return s.str();
+    };
+
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
+        const auto& b = fn.blocks[i];
+
+        // Loop header annotation.
+        auto lhit = loop_by_header.find(i);
+        if (lhit != loop_by_header.end()) {
+            os << "  // --- loop header (latch=L_" << std::hex
+               << fn.blocks[lhit->second->latch].start_addr << std::dec << ") ---\n";
+            os << "  while (1) {\n";
+        }
+
+        os << "  // block " << i << " @ 0x" << std::hex << b.start_addr << std::dec << "\n";
+        os << "  " << label(b.start_addr) << ":\n";
+
+        auto lit = loop_by_latch.find(i);
+
+        for (std::size_t k = 0; k < b.instructions.size(); ++k) {
+            const auto& ins = b.instructions[k];
+            const bool is_last = (k + 1 == b.instructions.size());
+
+            // If this is the back-edge branch of a loop, emit `continue;`.
+            // Handles both unconditional Branch and conditional BranchCond
+            // whose target is the loop header.
+            if (is_last && lit != loop_by_latch.end()) {
+                const auto header_addr = fn.blocks[lit->second->header].start_addr;
+                if (ins.op == ir::OpCode::Branch && !ins.operands.empty()
+                    && ins.operands[0].kind == ir::Operand::Kind::Label
+                    && ins.operands[0].label_addr == header_addr) {
+                    os << "    continue;  // back edge to L_"
+                       << std::hex << header_addr << std::dec << "\n";
+                    continue;
+                }
+                if (ins.op == ir::OpCode::BranchCond && ins.operands.size() >= 2
+                    && ins.operands[1].kind == ir::Operand::Kind::Label
+                    && ins.operands[1].label_addr == header_addr) {
+                    os << "    if (" << render_operand(ins.operands[0])
+                       << ") continue;  // back edge to L_"
+                       << std::hex << header_addr << std::dec << "\n";
+                    continue;
+                }
+            }
+            // If this is a conditional branch exiting the loop, emit `break;`
+            // when the target is outside the loop body.
+            if (is_last && lit != loop_by_latch.end()
+                && ins.op == ir::OpCode::BranchCond && ins.operands.size() >= 2
+                && ins.operands[1].kind == ir::Operand::Kind::Label) {
+                const auto target = ins.operands[1].label_addr;
+                auto tit = by_addr.find(target);
+                if (tit != by_addr.end()) {
+                    const auto& loop = *lit->second;
+                    bool in_loop = false;
+                    for (auto bi : loop.body) {
+                        if (bi == tit->second) { in_loop = true; break; }
+                    }
+                    if (!in_loop) {
+                        os << "    if (!(" << render_operand(ins.operands[0])
+                           << ")) break;  // loop exit\n";
+                        continue;
+                    }
+                }
+            }
+
+            if (is_last && ins.op == ir::OpCode::BranchCond && ins.operands.size() >= 2
+                && ins.operands[1].kind == ir::Operand::Kind::Label) {
+                const auto target = ins.operands[1].label_addr;
+                os << "    if (" << render_operand(ins.operands[0])
+                   << ") goto " << label(target) << ";\n";
+                continue;
+            }
+            if (is_last && ins.op == ir::OpCode::Branch && !ins.operands.empty()
+                && ins.operands[0].kind == ir::Operand::Kind::Label) {
+                const auto target = ins.operands[0].label_addr;
+                const auto it = by_addr.find(target);
+                const bool is_next_block = (it != by_addr.end() && it->second == i + 1);
+                if (!is_next_block) {
+                    os << "    goto " << label(target) << ";\n";
+                }
+                continue;
+            }
+            os << "    " << render_instruction(ins) << "\n";
+        }
+
+        if (lhit != loop_by_header.end()) {
+            os << "  }  // end while\n";
         }
     }
     os << "}\n";

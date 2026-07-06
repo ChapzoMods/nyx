@@ -124,6 +124,139 @@ void write_dot(std::ostream& os, const ir::Function& fn) {
     os << "}\n";
 }
 
+void write_dot(std::ostream& os, const ir::Function& fn,
+               const ir::DominatorAnalysis& dom,
+               const std::vector<ir::NaturalLoop>& loops) {
+    os << "digraph \"" << escape_dot(fn.name.empty() ? std::string("sub") : fn.name) << "\" {\n";
+    os << "  rankdir=TB;\n";
+    os << "  node [shape=box, fontname=\"monospace\", fontsize=10];\n";
+    os << "  edge [fontname=\"monospace\", fontsize=9];\n\n";
+
+    // Find entry block index.
+    std::size_t entry_idx = 0;
+    auto eit = fn.block_index.find(fn.entry);
+    if (eit != fn.block_index.end()) entry_idx = eit->second;
+
+    // Build loop-membership lookup: block -> loop index (header).
+    std::unordered_map<std::size_t, std::size_t> loop_header_of;
+    std::unordered_map<std::size_t, bool> in_any_loop;
+    std::unordered_map<std::size_t, bool> is_loop_header;
+    for (std::size_t li = 0; li < loops.size(); ++li) {
+        for (std::size_t bi : loops[li].body) {
+            loop_header_of[bi] = li;
+            in_any_loop[bi] = true;
+        }
+        is_loop_header[loops[li].header] = true;
+    }
+
+    // Emit nodes with colour hints.
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
+        const auto& b = fn.blocks[i];
+        std::string color;
+        std::string style = "filled";
+        if (i == entry_idx) {
+            color = "lightgreen";
+        } else if (!dom.reachable(i)) {
+            color = "lightgrey";
+        } else if (is_loop_header.count(i)) {
+            color = "lightyellow";
+        } else if (in_any_loop.count(i)) {
+            color = "lightblue";
+        }
+        os << "  " << node_id(b.start_addr, fn.entry)
+           << " [label=\"" << block_label(b) << "\"";
+        if (!color.empty()) {
+            os << ", style=" << style << ", fillcolor=\"" << color << "\"";
+        }
+        os << "];\n";
+    }
+    os << "\n";
+
+    // Build back-edge set: (from, to) pairs that are loop back edges.
+    std::unordered_map<std::uint64_t, std::uint64_t> back_edges;
+    for (const auto& loop : loops) {
+        // The back edge is latch -> header.
+        if (loop.latch < fn.blocks.size() && loop.header < fn.blocks.size()) {
+            back_edges[fn.blocks[loop.latch].start_addr] = fn.blocks[loop.header].start_addr;
+        }
+    }
+
+    // Emit edges.
+    std::unordered_map<std::uint64_t, std::size_t> by_addr;
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
+        by_addr[fn.blocks[i].start_addr] = i;
+    }
+
+    for (std::size_t i = 0; i < fn.blocks.size(); ++i) {
+        const auto& b = fn.blocks[i];
+        const auto src_id = node_id(b.start_addr, fn.entry);
+        const ir::Instruction* last = b.instructions.empty() ? nullptr : &b.instructions.back();
+        std::string cond_label;
+        std::uint64_t branch_target = 0;
+        bool has_branch = false;
+        if (last) {
+            if (last->op == ir::OpCode::BranchCond && last->operands.size() >= 2
+                && last->operands[1].kind == ir::Operand::Kind::Label) {
+                branch_target = last->operands[1].label_addr;
+                has_branch = true;
+                cond_label = "cond " + render_operand(last->operands[0]);
+            } else if (last->op == ir::OpCode::Branch && !last->operands.empty()
+                       && last->operands[0].kind == ir::Operand::Kind::Label) {
+                branch_target = last->operands[0].label_addr;
+                has_branch = true;
+                cond_label = "";
+            } else if (last->indirect) {
+                // Indirect branch/call: emit a comment edge to a virtual node.
+                os << "  " << src_id << " -> \"indirect\" [label=\"indirect: "
+                   << escape_dot(render_operand(last->operands[0])) << "\", style=dotted];\n";
+                continue;
+            }
+        }
+
+        for (std::size_t j = 0; j < b.successors.size(); ++j) {
+            const auto succ_addr = b.successors[j];
+            auto it = by_addr.find(succ_addr);
+            if (it == by_addr.end()) continue;
+            const auto dst_id = node_id(succ_addr, fn.entry);
+            std::string label;
+            std::string style;
+            // Check if this is a back edge.
+            auto be = back_edges.find(b.start_addr);
+            if (be != back_edges.end() && be->second == succ_addr) {
+                label = "back edge";
+                style = "dashed";
+            } else if (has_branch && succ_addr == branch_target && !cond_label.empty()) {
+                label = cond_label;
+            } else if (has_branch && succ_addr != branch_target) {
+                label = "fall-through";
+            } else if (has_branch && succ_addr == branch_target) {
+                label = "";
+            } else {
+                label = "fall-through";
+            }
+            os << "  " << src_id << " -> " << dst_id;
+            if (!label.empty() || !style.empty()) {
+                os << " [";
+                if (!label.empty()) os << "label=\"" << escape_dot(label) << "\"";
+                if (!label.empty() && !style.empty()) os << ", ";
+                if (!style.empty()) os << "style=" << style;
+                os << "]";
+            }
+            os << ";\n";
+        }
+    }
+
+    os << "}\n";
+}
+
+std::string to_dot(const ir::Function& fn,
+                   const ir::DominatorAnalysis& dom,
+                   const std::vector<ir::NaturalLoop>& loops) {
+    std::ostringstream os;
+    write_dot(os, fn, dom, loops);
+    return os.str();
+}
+
 void write_dot(std::ostream& os, const std::vector<ir::Function>& fns) {
     if (fns.empty()) {
         os << "digraph empty {}\n";

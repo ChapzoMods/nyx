@@ -6,6 +6,80 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.0.5] - 2026-07-06
+
+CFG analysis: dominator tree, natural loop detection, jump table
+detection, indirect branch marking, unreachable-block pruning, and
+structured `while`/`continue` in pseudo-C.
+
+### Added
+
+- **Dominator analysis** (`include/nyx/lifter/cfg_analysis.hpp`): new
+  module computing the immediate-dominator tree using the iterative
+  Cooper-Harvey-Kennedy algorithm (O(n²) worst case, but faster than
+  Lengauer-Tarjan for the small functions Nyx handles). Exposes
+  `DominatorAnalysis::idom`, `immediate_dominator()`, `dominates()`,
+  and the reverse-postorder traversal `rpo`.
+- **Natural loop detection** (`find_natural_loops`): identifies back
+  edges (B -> H where H dominates B) and collects the loop body for
+  each. Returns `NaturalLoop { header, latch, body }`.
+- **Reachability pruning** (`reachable_blocks`): BFS from the entry
+  returns the set of reachable block indices. The pseudo-C and DOT
+  renderers use this to mark unreachable blocks as pruned.
+- **Jump table detection** (`include/nyx/decompiler/jump_table_detector.hpp`):
+  scans for compiler-generated switch tables. x86: detects `lea reg,
+  [rip + disp]; jmp reg` patterns and resolves the table base from the
+  RIP-relative displacement, then reads entries from the binary until
+  a target falls outside any executable section. ARM64: detects `br xN`
+  preceded by `ldr xN, [xM, xK, lsl #3]` (table base resolution is
+  partial). Returns `JumpTable { branch_addr, table_addr, entry_count,
+  entry_size, targets }`.
+- **Indirect branch/call marking**: `ir::Instruction` gained an
+  `indirect` flag. The lifters now emit `branch_indirect` / `call_indirect`
+  for: x86 `jmp reg` / `call reg`, ARM64 `br xN` / `blr xN`, ARM32
+  `bx rN` / `blx rN`, MIPS `jr $tN` / `jalr $tN`. The pseudo-C renderer
+  emits `// indirect branch via <vreg>` comments and `goto *(...)` /
+  `call(*(..))` syntax for these.
+- **Structured loop output in pseudo-C**: `render_pseudo_c(fn, dom, loops)`
+  wraps loop headers in `while (1) { ... }`, renders back edges as
+  `continue;` (or `if (cond) continue;` for conditional back edges),
+  and renders loop-exit branches as `if (!(cond)) break;`. The simple
+  `render_pseudo_c(fn)` overload delegates with empty analysis.
+- **Extended DOT output**: `write_dot(fn, dom, loops)` colours nodes:
+  entry = lightgreen, loop header = lightyellow, loop body = lightblue,
+  unreachable = lightgrey. Back edges are drawn dashed with label
+  "back edge". Indirect branches emit a dotted edge to a virtual
+  "indirect" node.
+- **23 new tests**: 10 CFG analysis unit tests (dominators, loops,
+  reachability), 9 jump table + indirect branch unit tests, 5 v0.0.5
+  integration tests (dot with loops, pseudo-C while/continue,
+  dominators on ARM64, entry colour, unreachable pruning). Test count:
+  151 unit + 34 integration (was 133 + 29).
+
+### Changed
+
+- `ir::Instruction` gained a `bool indirect` field (default false).
+- `ir::Builder` gained `branch_indirect(Operand)` and `call_indirect(Operand)`.
+- All architecture lifters now emit indirect markers for register branches.
+- `render_pseudo_c` has a new 3-argument overload accepting dominator
+  and loop analysis; the Decompiler uses it for all function rendering.
+- The CLI `--format dot` now computes dominators + loops per function
+  and uses the extended DOT writer with colours.
+- `bx lr` on ARM32 is now correctly lifted as `Return` (was `Opaque`).
+- Output writers and `nyx --version` now report `0.0.5`.
+
+### Fixed
+
+- **Bug**: `bx lr` (ARM32 return) was lifted as `Opaque` in v0.0.3/v0.0.4.
+  Now correctly lifted as `OpCode::Return`. The `test_arm32_lifter`
+  expectation was updated.
+- **Bug**: ARM64 `br xN` (indirect branch) was lifted as `Opaque`. Now
+  lifted as `OpCode::Branch` with `indirect = true`.
+- **Bug**: MIPS `jr $tN` (indirect branch to non-`$ra`) was lifted as
+  `Opaque`. Now lifted as `OpCode::Branch` with `indirect = true`.
+- **Bug**: ARM32 `bx rN` (indirect branch to non-`lr`) was lifted as
+  `Opaque`. Now lifted as `OpCode::Branch` with `indirect = true`.
+
 ## [0.0.4] - 2026-07-06
 
 Type-shape detection, Graphviz DOT output, extended FunctionDetector, and

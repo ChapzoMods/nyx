@@ -117,6 +117,12 @@ struct Instruction {
     std::uint64_t         addr = 0;            // originating machine address
     std::string           raw_mnemonic;        // for Opaque/debug
 
+    /// v0.0.5: true when this is a Branch / Call whose target is a register
+    /// or memory location (i.e. an indirect control-flow transfer that the
+    /// CFG builder could not resolve statically). The actual target operand
+    /// lives in `operands[0]` as a Register or Mem operand.
+    bool                  indirect = false;
+
     [[nodiscard]] bool is_terminator() const noexcept {
         return op == OpCode::Branch || op == OpCode::BranchCond
             || op == OpCode::Return;
@@ -140,6 +146,22 @@ public:
     Builder& branch(std::uint64_t target)            { return emit(OpCode::Branch, INVALID_VREG, {Operand::label(target)}); }
     Builder& branch_cond(Operand cond, std::uint64_t target) { return emit(OpCode::BranchCond, INVALID_VREG, {std::move(cond), Operand::label(target)}); }
     Builder& call(Operand target)                    { return emit(OpCode::Call, INVALID_VREG, {std::move(target)}); }
+    /// v0.0.5: indirect branch through a register/memory operand. The
+    /// target cannot be resolved statically; the CFG marks this block as
+    /// having an indirect terminator.
+    Builder& branch_indirect(Operand target) {
+        Instruction i; i.op = OpCode::Branch; i.indirect = true;
+        i.operands = {std::move(target)};
+        ins_.push_back(std::move(i));
+        return *this;
+    }
+    /// v0.0.5: indirect call through a register/memory operand.
+    Builder& call_indirect(Operand target) {
+        Instruction i; i.op = OpCode::Call; i.indirect = true;
+        i.operands = {std::move(target)};
+        ins_.push_back(std::move(i));
+        return *this;
+    }
     Builder& ret()                                   { return emit(OpCode::Return, INVALID_VREG, {}); }
     Builder& nop()                                   { return emit(OpCode::Nop, INVALID_VREG, {}); }
     Builder& push(Operand v)                         { return emit(OpCode::Push, INVALID_VREG, {std::move(v)}); }

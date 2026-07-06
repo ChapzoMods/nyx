@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(nyx
-    VERSION 0.0.4
+    VERSION 0.0.5
     DESCRIPTION "Nyx - a headless decompilation engine"
     HOMEPAGE_URL "https://github.com/Chapzoo/nyx"
     LANGUAGES CXX
@@ -154,10 +154,12 @@ add_library(nyx STATIC
     src/parsers/disassembler.cpp
     src/lifter/ir.cpp
     src/lifter/cfg.cpp
+    src/lifter/cfg_analysis.cpp
     src/lifter/instruction_lifter.cpp
     src/decompiler/decompiler.cpp
     src/decompiler/function_detector.cpp
     src/decompiler/type_inferer.cpp
+    src/decompiler/jump_table_detector.cpp
     src/decompiler/pseudo_c.cpp
     src/output/json_writer.cpp
     src/output/text_writer.cpp
@@ -212,6 +214,8 @@ if(NYX_BUILD_TESTS)
         tests/unit/test_type_inferer.cpp
         tests/unit/test_function_detector_v004.cpp
         tests/unit/test_dot_writer.cpp
+        tests/unit/test_cfg_analysis.cpp
+        tests/unit/test_jump_table_detector.cpp
         tests/unit/test_json_writer.cpp
         tests/unit/test_text_writer.cpp
         tests/unit/test_pseudo_c_writer.cpp
@@ -230,6 +234,7 @@ if(NYX_BUILD_TESTS)
         tests/integration/test_v002_features.cpp
         tests/integration/test_v003_features.cpp
         tests/integration/test_v004_features.cpp
+        tests/integration/test_v005_features.cpp
         tests/integration/test_cli.cpp
     )
     target_link_libraries(nyx_integration_tests PRIVATE nyx::nyx doctest nyx::compiler_flags)

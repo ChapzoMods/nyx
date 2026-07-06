@@ -7,6 +7,7 @@
 #include "nyx/decompiler/function_detector.hpp"
 #include "nyx/decompiler/pseudo_c.hpp"
 #include "nyx/decompiler/type_inferer.hpp"
+#include "nyx/lifter/cfg_analysis.hpp"
 
 #include "nyx/core/bytes.hpp"
 #include "nyx/core/logger.hpp"
@@ -104,7 +105,9 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
         df.insn_count  = fn.instruction_count();
 
         // Render as pseudo-C lines.
-        std::string body = render_pseudo_c(fn);
+        auto dom = nyx::ir::compute_dominators(fn);
+        auto loops = nyx::ir::find_natural_loops(fn, dom);
+        std::string body = render_pseudo_c(fn, dom, loops);
         std::istringstream iss(body);
         std::string line;
         while (std::getline(iss, line)) df.lines.push_back(line);
@@ -141,7 +144,9 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
                         df.entry       = fn.entry;
                         df.block_count = fn.block_count();
                         df.insn_count  = fn.instruction_count();
-                        std::string body = render_pseudo_c(fn);
+                        auto dom = nyx::ir::compute_dominators(fn);
+        auto loops = nyx::ir::find_natural_loops(fn, dom);
+        std::string body = render_pseudo_c(fn, dom, loops);
                         std::istringstream iss(body);
                         std::string line;
                         while (std::getline(iss, line)) df.lines.push_back(line);
@@ -184,7 +189,9 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
                         df.entry       = fn.entry;
                         df.block_count = fn.block_count();
                         df.insn_count  = fn.instruction_count();
-                        std::string body = render_pseudo_c(fn);
+                        auto dom = nyx::ir::compute_dominators(fn);
+        auto loops = nyx::ir::find_natural_loops(fn, dom);
+        std::string body = render_pseudo_c(fn, dom, loops);
                         std::istringstream iss(body);
                         std::string line;
                         while (std::getline(iss, line)) df.lines.push_back(line);
@@ -216,7 +223,9 @@ DecompiledFunction Decompiler::decompile_range(
     df.entry       = fn.entry;
     df.block_count = fn.block_count();
     df.insn_count  = fn.instruction_count();
-    std::string body = render_pseudo_c(fn);
+    auto dom = nyx::ir::compute_dominators(fn);
+        auto loops = nyx::ir::find_natural_loops(fn, dom);
+        std::string body = render_pseudo_c(fn, dom, loops);
     std::istringstream iss(body);
     std::string line;
     while (std::getline(iss, line)) df.lines.push_back(line);

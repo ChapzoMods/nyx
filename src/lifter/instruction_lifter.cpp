@@ -326,8 +326,14 @@ std::vector<ir::Instruction> InstructionLifter::lift_x86(const DecodedInstructio
             b.cmp(tmp, op_at(parts, 0), op_at(parts, 1));
         }
     } else if (m == "jmp") {
-        if (auto t = insn.direct_target()) b.branch(*t);
-        else b.opaque("jmp " + o);
+        if (auto t = insn.direct_target()) {
+            b.branch(*t);
+        } else if (!parts.empty()) {
+            // Indirect jmp through register/memory - mark as indirect.
+            b.branch_indirect(op_at(parts, 0));
+        } else {
+            b.opaque("jmp " + o);
+        }
     } else if (m.rfind("j", 0) == 0 && m != "jmp" && m.size() >= 2 && m[0] == 'j') {
         if (auto t = insn.direct_target()) {
             ir::VReg cond = fresh();
@@ -339,10 +345,15 @@ std::vector<ir::Instruction> InstructionLifter::lift_x86(const DecodedInstructio
         if (auto t = insn.direct_target()) {
             b.call(ir::Operand::imm(static_cast<std::int64_t>(*t)));
         } else if (!o.empty()) {
-            if (o.find("0x") == 0)             b.call(ir::Operand::imm(parse_imm(o)));
-            else if (o.find('_') != std::string::npos
-                  || o.find('@') != std::string::npos) b.call(ir::Operand::sym(o));
-            else                                b.call(op_at(parts, 0));
+            if (o.find("0x") == 0) {
+                b.call(ir::Operand::imm(parse_imm(o)));
+            } else if (o.find('_') != std::string::npos
+                  || o.find('@') != std::string::npos) {
+                b.call(ir::Operand::sym(o));
+            } else {
+                // Indirect call through register/memory.
+                b.call_indirect(op_at(parts, 0));
+            }
         } else {
             b.opaque("call");
         }
@@ -406,10 +417,15 @@ std::vector<ir::Instruction> InstructionLifter::lift_arm64(const DecodedInstruct
         if (m == "bl" && t.has_value()) {
             b.call(ir::Operand::imm(static_cast<std::int64_t>(*t)));
         } else if (!ops.empty()) {
-            b.call(op(0));
+            // blr is always indirect (register call).
+            b.call_indirect(op(0));
         } else {
             b.opaque(m + " " + o);
         }
+    } else if (m == "br" || m == "braa" || m == "brab") {
+        // Indirect branch through register.
+        if (!ops.empty()) b.branch_indirect(op(0));
+        else b.opaque(m + " " + o);
     } else if (m.rfind("b.", 0) == 0 || m == "cbz" || m == "cbnz" || m == "tbz" || m == "tbnz") {
         if (auto t = insn.direct_target()) {
             ir::VReg cond = fresh();
@@ -475,8 +491,6 @@ std::vector<ir::Instruction> InstructionLifter::lift_arm64(const DecodedInstruct
     } else if (m == "adrp" || m == "adr") {
         if (ops.size() >= 2) b.mov(reg(0), op(1));
         else b.opaque(m + " " + o);
-    } else if (m == "br" || m == "braa" || m == "brab") {
-        b.opaque(m + " " + o);
     } else {
         b.opaque(m + (o.empty() ? "" : (" " + o)));
     }
@@ -518,10 +532,16 @@ std::vector<ir::Instruction> InstructionLifter::lift_arm32(const DecodedInstruct
     if (m == "nop" || m == "wfi" || m == "wfe") {
         b.nop();
     } else if (m == "bx" || m == "blx") {
-        // Indirect branch/call through register. For blx we model as call;
-        // for bx we treat as Opaque (can't resolve statically).
-        if (m == "blx" && !ops.empty()) b.call(op(0));
-        else                            b.opaque(m + " " + o);
+        // Indirect branch/call through register.
+        if (m == "blx" && !ops.empty()) {
+            b.call_indirect(op(0));
+        } else if (m == "bx" && !ops.empty()) {
+            // bx lr is a return; bx to any other reg is an indirect branch.
+            if (ops[0] == "lr" || ops[0] == "r14") b.ret();
+            else b.branch_indirect(op(0));
+        } else {
+            b.opaque(m + " " + o);
+        }
     } else if (m == "ret") {
         b.ret();
     } else if (m == "b" || m == "bl") {
@@ -748,15 +768,19 @@ std::vector<ir::Instruction> InstructionLifter::lift_mips(const DecodedInstructi
             if (auto t = insn.direct_target()) b.call(ir::Operand::imm(static_cast<std::int64_t>(*t)));
             else b.opaque("jal " + o);
         } else {
-            // jalr $rs  /  jalr $rd, $rs
-            if (!ops.empty()) b.call(op(ops.size() - 1));
+            // jalr $rs  /  jalr $rd, $rs  - indirect call.
+            if (!ops.empty()) b.call_indirect(op(ops.size() - 1));
             else b.opaque("jalr " + o);
         }
     } else if (m == "jr") {
-        // jr $ra is the canonical return; jr to any other reg is an indirect
-        // branch we can't resolve.
-        if (!ops.empty() && (ops[0] == "$ra" || ops[0] == "$31")) b.ret();
-        else b.opaque("jr " + o);
+        // jr $ra is the canonical return; jr to any other reg is an indirect branch.
+        if (!ops.empty() && (ops[0] == "$ra" || ops[0] == "$31")) {
+            b.ret();
+        } else if (!ops.empty()) {
+            b.branch_indirect(op(0));
+        } else {
+            b.opaque("jr " + o);
+        }
     } else if (m == "beq" || m == "bne" || m == "bgtz" || m == "blez" || m == "bltz" || m == "bgez") {
         // beq $rs, $rt, offset - Capstone resolves offset to absolute.
         // direct_target() may fail for MIPS because the target is the 3rd

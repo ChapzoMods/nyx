@@ -14,7 +14,7 @@ interactive one.
 
 - **Author:** Chapzoo
 - **License:** GNU GPL v3.0 or later
-- **Status:** v0.0.4 - early alpha, see the [Roadmap](#roadmap) below
+- **Status:** v0.0.5 - early alpha, see the [Roadmap](#roadmap) below
 - **Repository:** <https://github.com/Chapzoo/nyx>
 
 ---
@@ -59,7 +59,7 @@ to be the right tool for the cases where you do not need Ghidra.
 
 ## Features
 
-### v0.0.4 (current)
+### v0.0.5 (current)
 
 - **Three binary formats** parsed natively in C++20 (no libelf, no
   libpe, no libmacho dependency):
@@ -85,29 +85,35 @@ to be the right tool for the cases where you do not need Ghidra.
   - MIPS (32-bit and 64-bit) - addiu/addu/subu/lw/sw/beq/bne/j/jal/jr/
     lui/slt/and/or/xor/nor/sll/srl/sra/etc.
 - **Heuristic function detection** (`FunctionDetector`): scans stripped
-  binaries for well-known prologue patterns (push rbp; stp x29,x30;
-  stwu r1; addiu $sp; stmfd; str lr; etc.) to find function entries
-  without a symbol table. v0.0.4 adds `find_function_end` to bound
-  function bodies at the next return instruction.
+  binaries for well-known prologue patterns. v0.0.4 adds
+  `find_function_end` to bound function bodies at the next return.
 - **Type-shape detection** (`TypeInferer`): infers primitive types
-  (Int8/Int16/Int32/Int64/Ptr/Func) for virtual registers based on
-  immediate values, symbol sizes, and memory operand hints. Pseudo-C
-  output now emits typed variable declarations (`int v1;`, `char v2;`,
-  `long long v3;`) instead of bare `void*` everywhere.
+  (Int8/Int16/Int32/Int64/Ptr/Func) for virtual registers. Pseudo-C
+  output emits typed variable declarations.
+- **CFG analysis** (v0.0.5): dominator tree (Cooper-Harvey-Kennedy),
+  natural loop detection, reachability pruning. The pseudo-C renderer
+  emits `while (1) { ... }` with `continue;` for back edges and
+  `break;` for loop exits.
+- **Jump table detection** (v0.0.5 `JumpTableDetector`): identifies
+  compiler-generated switch tables on x86 (`lea + jmp reg`) and ARM64
+  (`ldr + br`), resolves table entries from the binary.
+- **Indirect branch marking** (v0.0.5): `jmp reg` / `br xN` / `bx rN` /
+  `jr $tN` are marked with `indirect = true` in the IR; pseudo-C emits
+  `// indirect branch via <vreg>` comments.
 - **Lifter** to a small SSA-style IR with 24 opcodes covering data
   movement, arithmetic, comparison, control flow and an `Opaque`
   fallback for any instruction the lifter does not yet model.
 - **CFG builder** that splits instructions into basic blocks on
-  terminators and on branch targets, with successor resolution. v0.0.4
-  fixes a critical bug where blocks were not split after terminators.
+  terminators and on branch targets, with successor resolution.
 - **Four output formats**: JSON (stable schema, machine-readable),
   plain text (human-readable listing), pseudo-C source with typed
-  variable declarations and if/else structure hints, and DOT/Graphviz
-  CFG rendering (`--format dot`).
+  variable declarations, if/else hints, and `while`/`continue` for
+  loops; DOT/Graphviz CFG rendering with dominator/loop colouring
+  (`--format dot`).
 - **CLI** with `--format`, `--output`, `--log-level`, `--arch`,
   `--format-hint`, `--version`, `--help`. Auto-detection logs the
   inferred format/arch at INFO level.
-- **Test suite**: 133 unit tests + 29 integration tests, all green
+- **Test suite**: 151 unit tests + 34 integration tests, all green
   under ASan + UBSan.
 
 ## Supported architectures and formats
@@ -270,7 +276,7 @@ mnemonics.
 
 ### Pseudo-C
 
-A best-effort translation of the IR into C-like syntax. v0.0.4 emits
+A best-effort translation of the IR into C-like syntax. v0.0.5 emits
 one statement per IR instruction; type recovery, SSA deconstruction
 and structured control flow are explicitly future work.
 
@@ -294,7 +300,7 @@ diffing two builds of the same binary.
 
 ```
 ================================================================================
- Nyx v0.0.4 - text dump of ./sample.elf
+ Nyx v0.0.5 - text dump of ./sample.elf
 ================================================================================
  Format     : elf
  Arch       : Intel x86-64 (x86-64)
@@ -395,7 +401,7 @@ about coverage - if you see `// frobnicate rax, rbx` in the pseudo-C
 output, you know exactly which instruction wasn't lifted.
 
 The IR uses virtual registers (`VReg`) allocated per-function by the
-lifter. v0.0.4 does not perform SSA deconstruction, dominance or
+lifter. v0.0.5 does not perform SSA deconstruction, dominance or
 type recovery - every function is emitted as a single `void f(void)`
 block with `vN` placeholders. This keeps the surface honest about
 what is actually implemented vs. what is on the roadmap.
@@ -415,7 +421,7 @@ Three reasons:
    fully readable. Contributors don't need to learn a third-party
    API to debug format issues.
 
-The trade-off is parser maturity - the v0.0.4 parsers handle the
+The trade-off is parser maturity - the v0.0.5 parsers handle the
 common cases but don't yet cover every edge of the specifications
 (relocations, DWARF unwinding, CODE_SIGNATURE load commands, ...).
 These are roadmap items.
@@ -486,13 +492,16 @@ APIs. No promise of decompiler quality.
   MIPS lifters; heuristic function detection via prologue scanning;
   shared operand parser across all architectures; pseudo-C if/else
   diamond hints; 46 new tests.
-- **v0.0.4** *(current)* - Type-shape detection (`TypeInferer` with
+- **v0.0.4** - Type-shape detection (`TypeInferer` with
   Int8/16/32/64/Ptr/Func lattice), typed pseudo-C declarations,
   DOT/Graphviz CFG output (`--format dot`), extended FunctionDetector
   (more prologues + `find_function_end`), critical CFG builder fix
   (blocks now split after terminators), 28 new tests.
-- **v0.0.5** - Better CFG. Detect jump tables, switch on indirect
-  branches, compute dominator tree and unreachable-block pruning.
+- **v0.0.5** *(current)* - CFG analysis: dominator tree
+  (Cooper-Harvey-Kennedy), natural loop detection, jump table
+  detection, indirect branch marking, unreachable-block pruning,
+  structured `while`/`continue` in pseudo-C, DOT output with
+  dominator/loop colouring, 23 new tests.
 - **v0.0.6** - DWARF v4 line-table parsing for source attribution in
   the JSON output.
 
@@ -545,7 +554,7 @@ GitHub account:
 
 Future iterations will automate repository creation and code push
 through GitHub's REST API (the user already requested this for a
-later session - the v0.0.4 codebase is structured so that no project
+later session - the v0.0.5 codebase is structured so that no project
 metadata needs to change once that automation is wired up).
 
 ## Credits

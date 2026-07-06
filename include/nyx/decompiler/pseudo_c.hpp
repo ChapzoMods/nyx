@@ -6,9 +6,11 @@
 #pragma once
 
 #include "nyx/lifter/cfg.hpp"
+#include "nyx/lifter/cfg_analysis.hpp"
 #include "nyx/lifter/ir.hpp"
 
 #include <string>
+#include <vector>
 
 namespace nyx {
 
@@ -22,6 +24,15 @@ namespace nyx {
 /// honest about its capabilities and gives downstream tooling a stable
 /// surface to consume.
 [[nodiscard]] std::string render_pseudo_c(const ir::Function& fn);
+
+/// v0.0.5: renders pseudo-C with dominator + loop information. When a
+/// back edge is detected, the loop body is wrapped in a `while (1) { ... }`
+/// block with the back edge rendered as `continue;` and any exit branch
+/// rendered as `break;`. This produces structured `while`/`do-while`
+/// constructs for simple counted loops.
+[[nodiscard]] std::string render_pseudo_c(const ir::Function& fn,
+                                          const ir::DominatorAnalysis& dom,
+                                          const std::vector<ir::NaturalLoop>& loops);
 
 /// Renders a single IR instruction as a C-like statement (no trailing newline).
 [[nodiscard]] std::string render_instruction(const ir::Instruction& i);

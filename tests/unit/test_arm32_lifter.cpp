@@ -106,7 +106,8 @@ TEST_CASE("ARM32 lifter: bx lr (return)") {
     d.address  = 0x8020;
     auto out = lifter.lift_one(d);
     REQUIRE_FALSE(out.empty());
-    CHECK(out.back().op == nyx::ir::OpCode::Opaque);
+    // v0.0.5: bx lr is now correctly lifted as Return (was Opaque in v0.0.3).
+    CHECK(out.back().op == nyx::ir::OpCode::Return);
 }
 
 TEST_CASE("ARM32 lifter: and r0, r1, r2") {

@@ -22,6 +22,7 @@
 #include "nyx/core/logger.hpp"
 #include "nyx/core/types.hpp"
 #include "nyx/decompiler/decompiler.hpp"
+#include "nyx/lifter/cfg_analysis.hpp"
 #include "nyx/output/json_writer.hpp"
 #include "nyx/output/pseudo_c_writer.hpp"
 #include "nyx/output/text_writer.hpp"
@@ -238,9 +239,14 @@ int main(int argc, char** argv) {
             nyx::output::write_pseudo_c(*out, bin, functions);
         } else if (args.format == "dot") {
             // DOT output needs the raw IR functions, not the pre-rendered
-            // pseudo-C lines. Re-decompile with decompile_ir().
+            // pseudo-C lines. Re-decompile with decompile_ir() and annotate
+            // with dominator + loop analysis.
             auto ir_fns = dec.decompile_ir(bin);
-            nyx::output::write_dot(*out, ir_fns);
+            for (const auto& fn : ir_fns) {
+                auto dom = nyx::ir::compute_dominators(fn);
+                auto loops = nyx::ir::find_natural_loops(fn, dom);
+                nyx::output::write_dot(*out, fn, dom, loops);
+            }
         } else {
             std::cerr << "error: unknown --format '" << args.format << "'. Use json, text, pseudo-c or dot.\n";
             return 1;
