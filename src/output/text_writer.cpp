@@ -7,6 +7,7 @@
 
 #include "nyx/core/arch.hpp"
 #include "nyx/core/bytes.hpp"
+#include "nyx/parsers/dwarf_parser.hpp"
 #include "nyx/version.hpp"
 
 #include <iomanip>
@@ -90,7 +91,18 @@ void write_text(std::ostream& os,
             for (std::size_t k = in.bytes.size(); k < 8; ++k) os << "  ";
             // reset sticky formatting before printing mnemonic + op_str
             os << std::dec << std::setfill(' ') << std::left << std::setw(8) << in.mnemonic
-               << " " << in.op_str << "\n";
+               << " " << in.op_str;
+            // v0.0.6: DWARF source annotation.
+            if (bin.dwarf) {
+                auto entry = bin.dwarf->lookup_address(in.address);
+                if (entry) {
+                    const auto fname = bin.dwarf->file_name(entry->file);
+                    os << "  ; " << (fname.empty() ? std::string("?") : fname)
+                       << ":" << entry->line;
+                    if (entry->column > 0) os << ":" << entry->column;
+                }
+            }
+            os << "\n";
         }
     }
     os << "================================================================================\n";

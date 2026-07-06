@@ -6,6 +6,7 @@
 #include "nyx/parsers/binary_parser.hpp"
 
 #include "nyx/core/logger.hpp"
+#include "nyx/parsers/dwarf_parser.hpp"
 #include "nyx/parsers/elf_parser.hpp"
 #include "nyx/parsers/macho_parser.hpp"
 #include "nyx/parsers/pe_parser.hpp"
@@ -100,7 +101,33 @@ BinaryInfo BinaryParser::load_and_parse(const std::string& path) {
     }
     BinaryInfo info = parser->parse(buf->view());
     info.path = path;
+    // v0.0.6: auto-load DWARF if debug sections are present.
+    load_dwarf(info, path);
     return info;
+}
+
+void BinaryParser::load_dwarf(BinaryInfo& bin, const std::string& path) {
+    // Check if the binary has any .debug_* sections.
+    bool has_debug = false;
+    for (const auto& s : bin.sections) {
+        if (s.name.rfind(".debug_", 0) == 0) { has_debug = true; break; }
+    }
+    if (!has_debug) return;
+
+    auto buf = ByteBuffer::from_file(path);
+    if (!buf) {
+        NYX_WARN("load_dwarf: cannot re-open '" + path + "'");
+        return;
+    }
+    try {
+        auto dwarf = parse_dwarf(bin, buf->view());
+        if (dwarf.has_info) {
+            bin.dwarf = std::make_shared<DwarfInfo>(std::move(dwarf));
+            NYX_INFO("DWARF: loaded debug info for " + path);
+        }
+    } catch (const std::exception& e) {
+        NYX_WARN(std::string("DWARF: load failed: ") + e.what());
+    }
 }
 
 }  // namespace nyx

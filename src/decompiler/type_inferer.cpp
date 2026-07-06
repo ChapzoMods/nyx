@@ -7,6 +7,7 @@
 
 #include "nyx/core/arch.hpp"
 #include "nyx/core/logger.hpp"
+#include "nyx/parsers/dwarf_parser.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -220,6 +221,53 @@ void TypeInferer::infer(ir::Function& fn) const {
             }
         }
     }
+}
+
+ir::Type TypeInferer::type_from_dwarf(std::uint64_t type_offset) const noexcept {
+    if (!bin_ || !bin_->dwarf) return ir::Type::Unknown;
+    const auto& d = *bin_->dwarf;
+    // Follow the type chain (typeref -> typedef -> base/pointer).
+    for (std::size_t i = 0; i < 32 && type_offset != 0; ++i) {
+        auto it = d.types.find(type_offset);
+        if (it == d.types.end()) return ir::Type::Unknown;
+        const auto& t = it->second;
+        switch (t.kind) {
+            case DwarfType::Kind::Base:
+                if (t.byte_size == 1) return ir::Type::Int8;
+                if (t.byte_size == 2) return ir::Type::Int16;
+                if (t.byte_size == 4) return ir::Type::Int32;
+                if (t.byte_size == 8) return ir::Type::Int64;
+                return ir::Type::Unknown;
+            case DwarfType::Kind::Pointer:
+                return ir::Type::Ptr;
+            case DwarfType::Kind::Typedef:
+                type_offset = t.pointee_offset;
+                continue;
+            case DwarfType::Kind::Function:
+                return ir::Type::Func;
+            default:
+                return ir::Type::Unknown;
+        }
+    }
+    return ir::Type::Unknown;
+}
+
+std::string TypeInferer::function_return_type(const std::string& fn_name) const {
+    if (!bin_ || !bin_->dwarf) return "void";
+    for (const auto& f : bin_->dwarf->functions) {
+        if (f.name == fn_name) {
+            if (f.type_offset != 0) {
+                const auto t = type_from_dwarf(f.type_offset);
+                if (t != ir::Type::Unknown) {
+                    return std::string(ir::type_c_decl(t));
+                }
+                // Try the DWARF type name directly.
+                return bin_->dwarf->resolve_type_name(f.type_offset);
+            }
+            break;
+        }
+    }
+    return "void";
 }
 
 }  // namespace nyx

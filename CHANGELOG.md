@@ -6,6 +6,82 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.0.6] - 2026-07-06
+
+DWARF v4 debug info parsing, annotated disassembly output, DWARF-enhanced
+type inference, and robustness fixes.
+
+### Added
+
+- **DWARF v4 parser** (`include/nyx/parsers/dwarf_parser.hpp`): pure C++20
+  parser for `.debug_line`, `.debug_info`, `.debug_abbrev`, `.debug_str`
+  — no libdwarf dependency. Extracts:
+  - Line tables: PC → (file, line, column) via the DWARF line number
+    program state machine (DWARF v2-v4, DWARF32/DWARF64, both endiannesses).
+  - Function names + address ranges (low_pc/high_pc) from `.debug_info`
+    DIEs (DW_TAG_subprogram).
+  - Type information: base types (DW_TAG_base_type), pointers
+    (DW_TAG_pointer_type), typedefs (DW_TAG_typedef), structs, unions,
+    enums — with DIE offset tracking for cross-references.
+  - `DwarfInfo::lookup_address()` binary-searches the line table.
+  - `DwarfInfo::function_name_at()` finds the containing function.
+  - `DwarfInfo::resolve_type_name()` follows typedef/pointer chains.
+- **`BinaryInfo::dwarf`**: `std::shared_ptr<DwarfInfo>` populated
+  automatically by `BinaryParser::load_and_parse` when `.debug_*`
+  sections are present. `BinaryParser::load_dwarf()` can be called
+  explicitly with `--debug-info`.
+- **Annotated output** (`--format annotated`): interleaves source lines
+  from DWARF with disassembled instructions (`// main.c:42` before each
+  line change), similar to `objdump -S`. Falls back to plain disassembly
+  with `; :line` suffixes when no DWARF is available.
+- **DWARF text output enrichment**: the `--format text` writer now
+  appends `; file.c:line:col` to each instruction when DWARF is available.
+- **DWARF type inference**: `TypeInferer::type_from_dwarf()` resolves
+  `DW_AT_type` DIE references (base types → Int8/16/32/64, pointers →
+  Ptr, typedefs followed to their target). `function_return_type()`
+  returns the C return type of a named function from DWARF.
+- **CLI flags**: `--debug-info` / `--dwarf` forces DWARF loading.
+- **`sample.debug.elf` fixture**: built with `-gdwarf-4` for DWARF
+  integration tests.
+- **13 new tests**: 10 DWARF parser unit tests, 3 annotated writer unit
+  tests, 6 v0.0.6 integration tests (DWARF loading, text annotations,
+  annotated output, DWARF functions, type inference, CLI). Test count:
+  164 unit + 40 integration (was 151 + 34).
+
+### Changed
+
+- `BinaryParser::load_and_parse` now auto-loads DWARF when `.debug_*`
+  sections are present.
+- `TypeInferer` gained `type_from_dwarf()` and `function_return_type()`.
+- The text and annotated writers check `bin.dwarf` for source annotations.
+- Output writers and `nyx --version` now report `0.0.6`.
+- DWARF form `DW_FORM_flag` (0x19) is treated as `flag_present` (0 bytes)
+  in DWARF v4+ to match modern compiler output.
+
+### Fixed
+
+- **Bug**: DWARF `.debug_line` parser used manual header field reading
+  without trusting `header_length`, causing the line program to start at
+  the wrong offset. Now uses `header_length` to position the reader
+  precisely at the program start.
+- **Bug**: Division by zero in the line program state machine when
+  `line_range` or `max_ops_per_inst` was 0 (corrupt section). Added
+  guards.
+- **Bug**: `DW_FORM_flag` (0x19) was treated as 1-byte flag in DWARF v4+,
+  but modern compilers emit `DW_FORM_flag_present` (same code, 0 bytes).
+  This desynchronised the entire `.debug_info` parse after the first
+  `DW_AT_external` attribute, causing most subprogram DIEs to be missed.
+- **Bug**: DWARF DIEs with `has_children=true` were not tracked for depth,
+  causing child DIEs to be misinterpreted as siblings and aborting the
+  unit on unknown abbrev codes. Now tracks depth via null DIE consumption.
+- **Bug**: Missing DWARF v4 forms (`DW_FORM_sec_offset` 0x17,
+  `DW_FORM_exprloc` 0x18, `DW_FORM_strx` 0x1A, `DW_FORM_addrx` 0x1B,
+  `DW_FORM_strx1-4`) caused the parser to abort on the first DIE using
+  them. All are now handled.
+- **Pre-existing warnings** in `macho_parser.cpp` (`r16` unused,
+  `strtab_size` set-but-not-used, `vmaddr`/`vmsize`/`fileoff` unused)
+  silenced.
+
 ## [0.0.5] - 2026-07-06
 
 CFG analysis: dominator tree, natural loop detection, jump table

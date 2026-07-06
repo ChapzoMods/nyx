@@ -27,6 +27,7 @@
 #include "nyx/output/pseudo_c_writer.hpp"
 #include "nyx/output/text_writer.hpp"
 #include "nyx/output/dot_writer.hpp"
+#include "nyx/output/annotated_writer.hpp"
 #include "nyx/parsers/binary_parser.hpp"
 #include "nyx/parsers/disassembler.hpp"
 
@@ -52,6 +53,10 @@ struct CliArgs {
     // Optional overrides for when detection fails.
     std::string force_arch;
     std::string force_format;
+    /// v0.0.6: force DWARF loading even if no .debug_* sections are
+    /// auto-detected (e.g. separate debug file path). For v0.0.6 this
+    /// is a hint; actual separate-file support is on the roadmap.
+    bool        force_dwarf  = false;
 };
 
 void print_help(std::ostream& os) {
@@ -65,12 +70,13 @@ void print_help(std::ostream& os) {
        << "Options:\n"
        << "  -h, --help              Show this help and exit.\n"
        << "  -V, --version           Print the Nyx banner and exit.\n"
-       << "  -f, --format <fmt>      Output format: json | text | pseudo-c | dot (default: json).\n"
+       << "  -f, --format <fmt>      Output format: json | text | pseudo-c | dot | annotated (default: json).\n"
        << "  -o, --output <path>     Write output to <path> instead of stdout.\n"
        << "  -L, --log-level <lvl>   trace|debug|info|warn|error|critical (default: info).\n"
        << "  -q, --quiet             Alias for --log-level critical.\n"
        << "      --arch <name>       Override architecture detection (x86, x86-64, arm, ...).\n"
        << "      --format-hint <fmt> Override format detection (elf|pe|mach-o).\n"
+       << "      --debug-info        Force DWARF loading (alias: --dwarf).\n"
        << "\n"
        << "Exit codes:\n"
        << "   0  success\n"
@@ -106,6 +112,8 @@ int parse_args(int argc, char** argv, CliArgs& out) {
         } else if (a == "--format-hint") {
             if (++i >= args.size()) { std::cerr << "error: " << a << " needs an argument\n"; return 1; }
             out.force_format = std::string(args[i]);
+        } else if (a == "--debug-info" || a == "--dwarf") {
+            out.force_dwarf = true;
         } else if (a.empty()) {
             // skip
         } else if (a[0] == '-') {
@@ -159,6 +167,13 @@ int main(int argc, char** argv) {
 
     try {
         nyx::BinaryInfo bin = nyx::BinaryParser::load_and_parse(args.input_path);
+
+        // v0.0.6: force DWARF reload if requested (load_and_parse already
+        // auto-loads it when .debug_* sections are present, but --debug-info
+        // can be used to force the attempt even on stripped binaries).
+        if (args.force_dwarf && !bin.dwarf) {
+            nyx::BinaryParser::load_dwarf(bin, args.input_path);
+        }
 
         // Log the auto-detected arch so users get feedback when they don't
         // pass --arch. The detection itself happens in the format parser
@@ -247,8 +262,11 @@ int main(int argc, char** argv) {
                 auto loops = nyx::ir::find_natural_loops(fn, dom);
                 nyx::output::write_dot(*out, fn, dom, loops);
             }
+        } else if (args.format == "annotated") {
+            // v0.0.6: annotated disassembly with interleaved source lines.
+            nyx::output::write_annotated(*out, bin, disasm_sections);
         } else {
-            std::cerr << "error: unknown --format '" << args.format << "'. Use json, text, pseudo-c or dot.\n";
+            std::cerr << "error: unknown --format '" << args.format << "'. Use json, text, pseudo-c, dot or annotated.\n";
             return 1;
         }
         return 0;

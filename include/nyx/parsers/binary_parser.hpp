@@ -46,6 +46,11 @@ public:
 
     /// Convenience: loads a file from disk, detects the format and parses it.
     [[nodiscard]] static BinaryInfo load_and_parse(const std::string& path);
+
+    /// v0.0.6: loads DWARF debug info from `path` into `bin.dwarf`.
+    /// No-op if the binary has no .debug_* sections. Safe to call on
+    /// any format; only ELF and Mach-O currently carry DWARF.
+    static void load_dwarf(BinaryInfo& bin, const std::string& path);
 };
 
 }  // namespace nyx

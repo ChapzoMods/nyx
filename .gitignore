@@ -25,6 +25,7 @@ tests/fixtures/sample.arm64.macho
 tests/fixtures/sample.fat.macho
 tests/fixtures/sample.mips.elf
 tests/fixtures/sample.ppc.elf
+tests/fixtures/sample.debug.elf
 
 # IDE / editor
 .vscode/

@@ -41,6 +41,10 @@ public:
     /// destination in the function. Idempotent: calling twice is safe.
     void infer(ir::Function& fn) const;
 
+    /// v0.0.6: returns the C type name for a function's return type,
+    /// resolved from DWARF if available. Returns "void" when unknown.
+    [[nodiscard]] std::string function_return_type(const std::string& fn_name) const;
+
     /// Returns the inferred type for a vreg, or Type::Unknown if not found.
     [[nodiscard]] ir::Type type_of(const ir::Function& fn, ir::VReg v) const noexcept;
 
@@ -53,6 +57,9 @@ private:
 
     [[nodiscard]] ir::Type type_from_symbol(std::uint64_t addr) const noexcept;
     [[nodiscard]] ir::Type type_from_imm(std::int64_t v) const noexcept;
+    /// v0.0.6: resolves a DWARF type to an IR Type. Returns Unknown if
+    /// no DWARF or the type can't be mapped.
+    [[nodiscard]] ir::Type type_from_dwarf(std::uint64_t type_offset) const noexcept;
 };
 
 }  // namespace nyx

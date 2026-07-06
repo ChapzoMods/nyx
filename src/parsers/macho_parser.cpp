@@ -230,7 +230,6 @@ BinaryInfo MachOParser::parse(ByteView data) const {
     const Endian endian = swap ? Endian::Big : Endian::Little;
     const bool le_reader = !swap;
 
-    auto r16 = [&](std::size_t o) { return le_reader ? read_u16_le(data.data() + o) : read_u16_be(data.data() + o); };
     auto r32 = [&](std::size_t o) { return le_reader ? read_u32_le(data.data() + o) : read_u32_be(data.data() + o); };
     auto r64 = [&](std::size_t o) { return le_reader ? read_u64_le(data.data() + o) : read_u64_be(data.data() + o); };
     auto rs32 = [&](std::size_t o) { return static_cast<std::int32_t>(r32(o)); };
@@ -269,7 +268,7 @@ BinaryInfo MachOParser::parse(ByteView data) const {
     // Walk load commands.
     const std::size_t header_size = is_64 ? 32 : 28;
     std::size_t off = header_size;
-    std::uint64_t symtab_off = 0, symtab_nsyms = 0, strtab_off = 0, strtab_size = 0;
+    std::uint64_t symtab_off = 0, symtab_nsyms = 0, strtab_off = 0;
 
     for (std::uint32_t i = 0; i < h.ncmds; ++i) {
         if (off + 8 > data.size()) NYX_THROW(Parser, "Mach-O: load command header OOB");
@@ -283,6 +282,7 @@ BinaryInfo MachOParser::parse(ByteView data) const {
             const std::uint64_t vmaddr   = seg64 ? r64(off + 24) : r32(off + 24);
             const std::uint64_t vmsize   = seg64 ? r64(off + 32) : r32(off + 28);
             const std::uint64_t fileoff  = seg64 ? r64(off + 40) : r32(off + 32);
+            (void)vmaddr; (void)vmsize; (void)fileoff;
             const std::uint64_t filesize = seg64 ? r64(off + 48) : r32(off + 36);
             const std::uint32_t maxprot  = seg64 ? r32(off + 56) : r32(off + 40);
             const std::uint32_t nsects   = seg64 ? r32(off + 64) : r32(off + 48);
@@ -325,7 +325,6 @@ BinaryInfo MachOParser::parse(ByteView data) const {
             symtab_off   = r32(off + 8);
             symtab_nsyms = r32(off + 12);
             strtab_off   = r32(off + 16);
-            strtab_size  = r32(off + 20);
         } else if (cmd == LC_MAIN) {
             // entryoff is a file offset relative to image base (which is 0
             // for Mach-O). We can't compute the VA until we know __TEXT.vmaddr,

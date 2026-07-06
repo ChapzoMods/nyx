@@ -19,6 +19,13 @@ else
     echo "[fixtures] WARN: could not build sample.elf"
 fi
 
+# v0.0.6: debug ELF with DWARF v4 line tables.
+if "$CC" -gdwarf-4 -O0 -o "$OUT_DIR/sample.debug.elf" sample.c 2>/dev/null; then
+    echo "[fixtures] built sample.debug.elf (x86-64, DWARF v4)"
+else
+    echo "[fixtures] WARN: could not build sample.debug.elf"
+fi
+
 # Native ELF (i386) - requires gcc -m32
 if "$CC" -m32 -fno-pie -no-pie -O0 -o "$OUT_DIR/sample.elf32" sample.c 2>/dev/null; then
     echo "[fixtures] built sample.elf32 (i386)"

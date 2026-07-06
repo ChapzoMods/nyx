@@ -9,11 +9,15 @@
 #include "nyx/core/bytes.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace nyx {
+
+// Forward declaration to avoid circular include.
+struct DwarfInfo;
 
 /// File format detected by the magic-bytes probe in BinaryParser::detect.
 enum class BinaryFormat : std::uint8_t {
@@ -84,6 +88,12 @@ struct BinaryInfo {
     /// "primary" slice (the first one Nyx recognised); the remaining
     /// slices live here so callers can iterate them. Empty for ELF/PE.
     std::vector<BinaryInfo> slices;
+
+    /// v0.0.6: DWARF debug info parsed from .debug_line / .debug_info /
+    /// .debug_abbrev / .debug_str. Populated lazily by
+    /// BinaryParser::load_dwarf() when debug sections are present.
+    /// Nullptr when the binary has no DWARF or it hasn't been loaded yet.
+    std::shared_ptr<DwarfInfo> dwarf;
 
     /// Returns the first executable section (typically .text or __TEXT).
     [[nodiscard]] const Section* code_section() const noexcept;
