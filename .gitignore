@@ -35,3 +35,4 @@ tests/fixtures/sample.debug.elf
 .DS_Store
 compile_commands.json
 .cache/
+build_py/

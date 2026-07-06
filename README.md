@@ -14,7 +14,7 @@ interactive one.
 
 - **Author:** Chapzoo
 - **License:** GNU GPL v3.0 or later
-- **Status:** v0.0.6 - early alpha, see the [Roadmap](#roadmap) below
+- **Status:** v0.1.0 - first beta, see the [Roadmap](#roadmap) below
 - **Repository:** <https://github.com/Chapzoo/nyx>
 
 ---
@@ -59,7 +59,7 @@ to be the right tool for the cases where you do not need Ghidra.
 
 ## Features
 
-### v0.0.6 (current)
+### v0.1.0 (current) - first beta
 
 - **Three binary formats** parsed natively in C++20 (no libelf, no
   libpe, no libmacho dependency):
@@ -108,6 +108,19 @@ to be the right tool for the cases where you do not need Ghidra.
 - **DWARF-enhanced type inference** (v0.0.6): `TypeInferer` now resolves
   `DW_AT_type` DIE references (base types, pointers, typedefs) and uses
   them instead of size-based heuristics when available.
+- **SSA deconstruction** (v0.1.0): `SsaBuilder` transforms the IR into
+  Static Single Assignment form using the Cytron et al. algorithm:
+  dominance frontiers → phi insertion → variable renaming via dominator
+  tree DFS. Exposed as `build_ssa(fn, dom)` returning an `SSAResult`
+  with the SSA-transformed function and version mappings.
+- **Calling convention detection** (v0.1.0): `CallingConvention` module
+  identifies the ABI (SysV AMD64, MS x64, AAPCS ARM64/ARM32, MIPS O32/
+  N32/N64, PPC SVR) based on the architecture. Maps argument and return
+  registers to semantic names (`param1`, `param2`, `retval`).
+- **Python bindings** (v0.1.0, optional): pybind11 bindings exposing
+  `BinaryInfo`, `Section`, `Symbol`, `DecompiledFunction`, and a
+  `decompile_file(path, format)` convenience function. Build with
+  `-DNYX_BUILD_PYTHON=ON`.
 - **Indirect branch marking** (v0.0.5): `jmp reg` / `br xN` / `bx rN` /
   `jr $tN` are marked with `indirect = true` in the IR; pseudo-C emits
   `// indirect branch via <vreg>` comments.

@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(nyx
-    VERSION 0.0.6
+    VERSION 0.1.0
     DESCRIPTION "Nyx - a headless decompilation engine"
     HOMEPAGE_URL "https://github.com/Chapzoo/nyx"
     LANGUAGES CXX
@@ -71,6 +71,7 @@ option(NYX_ENABLE_SANITIZERS "Enable ASan+UBSan (debug/CI only)" OFF)
 option(NYX_ENABLE_COVERAGE    "Enable code coverage instrumentation" OFF)
 option(NYX_BUILD_TESTS        "Build the test suite (doctest)" ON)
 option(NYX_WERROR             "Treat warnings as errors" OFF)
+option(NYX_BUILD_PYTHON       "Build Python bindings via pybind11 (optional)" OFF)
 
 if(NYX_WERROR)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -119,6 +120,11 @@ set(CAPSTONE_PPC_SUPPORT   ON CACHE BOOL "" FORCE)
 set(CAPSTONE_MIPS_SUPPORT  ON CACHE BOOL "" FORCE)
 set(CAPSTONE_ARCHITECTURE_DEFAULT OFF CACHE BOOL "" FORCE)
 
+# When building Python bindings, Capstone must also be PIC.
+if(NYX_BUILD_PYTHON)
+    set(CAPSTONE_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+endif()
+
 FetchContent_Declare(
     capstone
     GIT_REPOSITORY https://github.com/capstone-engine/capstone.git
@@ -126,6 +132,11 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(capstone)
+
+# When building Python bindings, Capstone must also be PIC.
+if(NYX_BUILD_PYTHON)
+    set_target_properties(capstone PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 
 if(NYX_BUILD_TESTS)
     FetchContent_Declare(
@@ -156,11 +167,13 @@ add_library(nyx STATIC
     src/lifter/ir.cpp
     src/lifter/cfg.cpp
     src/lifter/cfg_analysis.cpp
+    src/lifter/ssa_builder.cpp
     src/lifter/instruction_lifter.cpp
     src/decompiler/decompiler.cpp
     src/decompiler/function_detector.cpp
     src/decompiler/type_inferer.cpp
     src/decompiler/jump_table_detector.cpp
+    src/decompiler/calling_convention.cpp
     src/decompiler/pseudo_c.cpp
     src/output/json_writer.cpp
     src/output/text_writer.cpp
@@ -169,6 +182,11 @@ add_library(nyx STATIC
     src/output/annotated_writer.cpp
 )
 add_library(nyx::nyx ALIAS nyx)
+
+# When building Python bindings, the nyx library must be PIC (shared module).
+if(NYX_BUILD_PYTHON)
+    set_target_properties(nyx PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
 
 target_include_directories(nyx PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -220,6 +238,8 @@ if(NYX_BUILD_TESTS)
         tests/unit/test_jump_table_detector.cpp
         tests/unit/test_dwarf_parser.cpp
         tests/unit/test_annotated_writer.cpp
+        tests/unit/test_ssa_builder.cpp
+        tests/unit/test_calling_convention.cpp
         tests/unit/test_json_writer.cpp
         tests/unit/test_text_writer.cpp
         tests/unit/test_pseudo_c_writer.cpp
@@ -274,3 +294,29 @@ configure_file(
     ${CMAKE_CURRENT_SOURCE_DIR}/include/nyx/version.hpp
     @ONLY
 )
+
+# ---------------------------------------------------------------------------
+# Optional Python bindings (pybind11 via FetchContent)
+# ---------------------------------------------------------------------------
+if(NYX_BUILD_PYTHON)
+    # Find Python first.
+    find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+
+    # Fetch pybind11.
+    FetchContent_Declare(
+        pybind11
+        GIT_REPOSITORY https://github.com/pybind/pybind11.git
+        GIT_TAG        v2.13.6
+        GIT_SHALLOW    TRUE
+    )
+    # Suppress pybind11's own warnings about CMake versions.
+    set(PYBIND11_FINDPYTHON OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(pybind11)
+
+    pybind11_add_module(nyx_python bindings/python/nyx_python.cpp)
+    target_link_libraries(nyx_python PRIVATE nyx::nyx)
+    target_compile_features(nyx_python PRIVATE cxx_std_20)
+
+    # Install the module to the Python site-packages.
+    install(TARGETS nyx_python LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/nyx)
+endif()

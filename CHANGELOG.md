@@ -6,6 +6,73 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.1.0] - 2026-07-07 - First beta
+
+SSA deconstruction, calling convention detection, and Python bindings.
+This is the first release in the v0.x.0 "Nyx" series (beta).
+
+### Added
+
+- **SSA deconstruction** (`include/nyx/lifter/ssa_builder.hpp`): new
+  module that transforms the IR into Static Single Assignment form using
+  the standard Cytron et al. algorithm:
+  1. `compute_dominance_frontiers()` computes DF for every block from
+     the dominator tree (precomputed by `DominatorAnalysis`).
+  2. Phi instructions are inserted at the dominance frontier of every
+     definition site, using a worklist algorithm.
+  3. Variables are renamed via a depth-first walk of the dominator tree
+     with per-variable version stacks.
+  The result (`SSAResult`) contains the SSA-transformed function plus
+  version/original mappings for debugging. Phi nodes are modeled as
+  `OpCode::Opaque` with a `phi:` prefix in the raw_mnemonic.
+- **Calling convention detection**
+  (`include/nyx/decompiler/calling_convention.hpp`): new module
+  identifying the ABI per architecture:
+  - x86-64: System V AMD64 (rdi, rsi, rdx, rcx, r8, r9 → rax)
+  - x86: Generic cdecl (all stack, eax)
+  - AArch64: AAPCS (x0-x7 → x0)
+  - ARM32: AAPCS (r0-r3 → r0)
+  - MIPS32: O32 ($a0-$a3 → $v0)
+  - MIPS64: N64 ($a0-$a7 → $v0)
+  - PPC: SVR (r3-r10 → r3)
+  `register_to_param_index()` maps register names to parameter indices;
+  `param_name()` and `retval_name()` produce semantic names.
+- **Python bindings** (`bindings/python/nyx_python.cpp`): optional
+  pybind11 module built with `-DNYX_BUILD_PYTHON=ON`. Exposes:
+  - Enums: `Arch`, `BinaryFormat`
+  - Classes: `BinaryInfo`, `Section`, `Symbol`, `DecompiledFunction`
+  - Functions: `load(path)` → BinaryInfo, `decompile_file(path, format)`
+    → string output for json/text/pseudo-c/annotated/dot
+  - `__version__` attribute = "0.1.0"
+  Example script at `bindings/python/example.py`.
+- **7 new tests**: 6 SSA builder unit tests (empty function, single
+  block, diamond CFG with phi, dominance frontiers, original mapping,
+  loop with phi at header) + 8 calling convention unit tests (SysV
+  AMD64, AAPCS ARM64/ARM32, MIPS O32, PPC SVR, register_to_param_index,
+  param_name, to_string, unknown arch). Test count: 179 unit + 40
+  integration (was 164 + 40).
+
+### Changed
+
+- `ir::Instruction` gained an `indirect` flag (v0.0.5); the SSA builder
+  preserves it during renaming.
+- `ir::Builder` gained `branch_indirect()` and `call_indirect()`
+  (v0.0.5); the SSA builder renames their register operands.
+- CMake gained `NYX_BUILD_PYTHON` option (default OFF). When ON,
+  pybind11 is fetched via FetchContent, and both the `nyx` library and
+  Capstone are built with `POSITION_INDEPENDENT_CODE=ON` so the shared
+  module links correctly.
+- Output writers and `nyx --version` now report `0.1.0`.
+
+### Fixed
+
+- **Bug**: `build_ssa` crashed on empty functions (no blocks) because it
+  tried to access `fn.blocks[0]` before checking for emptiness. Added
+  an early return guard.
+- The `register_to_param_index` function was initially a member of
+  `CallConventionInfo` in the test; corrected to the free function
+  declared in the header.
+
 ## [0.0.6] - 2026-07-06
 
 DWARF v4 debug info parsing, annotated disassembly output, DWARF-enhanced
