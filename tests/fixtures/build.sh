@@ -133,4 +133,8 @@ python3 gen_mips_elf.py > "$OUT_DIR/sample.mips.elf" 2>/dev/null \
 python3 gen_ppc_elf.py > "$OUT_DIR/sample.ppc.elf" 2>/dev/null \
     && echo "[fixtures] built sample.ppc.elf (hand-crafted, PPC32 BE)"
 
+# v0.2.0: WebAssembly fixture.
+python3 gen_wasm.py > "$OUT_DIR/sample.wasm" 2>/dev/null \
+    && echo "[fixtures] built sample.wasm (minimal WASM)"
+
 ls -la "$OUT_DIR"

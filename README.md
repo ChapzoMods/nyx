@@ -14,7 +14,7 @@ interactive one.
 
 - **Author:** Chapzoo
 - **License:** GNU GPL v3.0 or later
-- **Status:** v0.1.0 - first beta, see the [Roadmap](#roadmap) below
+- **Status:** v0.2.0 - second beta, see the [Roadmap](#roadmap) below
 - **Repository:** <https://github.com/Chapzoo/nyx>
 
 ---
@@ -59,7 +59,7 @@ to be the right tool for the cases where you do not need Ghidra.
 
 ## Features
 
-### v0.1.0 (current) - first beta
+### v0.2.0 (current) - first beta
 
 - **Three binary formats** parsed natively in C++20 (no libelf, no
   libpe, no libmacho dependency):

@@ -6,6 +6,57 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.2.0] - 2026-07-07
+
+Region structuring, SSA optimizations, WebAssembly support, and
+improvements to DWARF and dot output.
+
+### Added
+
+- **Region structuring** (`include/nyx/lifter/region_builder.hpp`): new
+  module that transforms the CFG into a high-level region tree
+  (if/else, while, do-while, switch, sequence). Uses a simplified
+  interval-based approach leveraging the dominator tree and natural
+  loop detection from v0.0.5. Irreducible regions fall back to `goto`.
+  `render_structured()` produces pseudo-C without gotos where possible.
+- **SSA optimizations** (`include/nyx/lifter/ssa_optimizer.hpp`): three
+  safe optimization passes applied at fixpoint:
+  - **Constant folding**: evaluates arithmetic on immediates
+    (`2 + 3` → `5`).
+  - **Expression simplification**: `v1 + 0` → `v1`, `v1 * 1` → `v1`,
+    `v1 * 0` → `0`, `v1 & 0` → `0`, etc.
+  - **Dead code elimination**: removes instructions whose result is
+    never used and that have no side effects.
+  Enabled with `-O1` / `--optimize` CLI flag.
+- **WebAssembly (WASM) parser** (`include/nyx/parsers/wasm_parser.hpp`):
+  pure C++20 parser for the WASM binary format. Supports:
+  - Header (magic + version)
+  - Type section (function signatures)
+  - Function section (type index mapping)
+  - Export section (function/table/memory/global exports)
+  - Code section (function bodies with locals)
+  - LEB128 decoding (unsigned and signed)
+  Robust: truncated or corrupt sections are skipped without crashing.
+- **CLI flag `-O1`**: enables SSA optimizations during decompilation.
+- **17 new tests**: 7 SSA optimizer, 5 region builder, 5 WASM parser.
+  Test count: 196 unit + 40 integration (was 179 + 40).
+
+### Changed
+
+- The CLI now supports `-O1` / `-O` / `--optimize` for SSA optimizations.
+- When `-O1` is active, the decompiler runs `optimize()` on each IR
+  function before rendering pseudo-C.
+- Output writers and `nyx --version` now report `0.2.0`.
+- `build.sh` generates `sample.wasm` via `gen_wasm.py`.
+
+### Fixed
+
+- **Bug**: WASM unit test had incorrect section size (5 instead of 6
+  for the Type section), causing the function section to be skipped.
+- **Bug**: SSA optimizer test expected `v1 = Mov(5)` to survive after
+  DCE, but v1 was unused after v2 was eliminated. Fixed to check total
+  instruction count reduction instead.
+
 ## [0.1.0] - 2026-07-07 - First beta
 
 SSA deconstruction, calling convention detection, and Python bindings.

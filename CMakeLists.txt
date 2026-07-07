@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(nyx
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Nyx - a headless decompilation engine"
     HOMEPAGE_URL "https://github.com/Chapzoo/nyx"
     LANGUAGES CXX
@@ -164,10 +164,13 @@ add_library(nyx STATIC
     src/parsers/macho_parser.cpp
     src/parsers/disassembler.cpp
     src/parsers/dwarf_parser.cpp
+    src/parsers/wasm_parser.cpp
     src/lifter/ir.cpp
     src/lifter/cfg.cpp
     src/lifter/cfg_analysis.cpp
     src/lifter/ssa_builder.cpp
+    src/lifter/ssa_optimizer.cpp
+    src/lifter/region_builder.cpp
     src/lifter/instruction_lifter.cpp
     src/decompiler/decompiler.cpp
     src/decompiler/function_detector.cpp
@@ -240,6 +243,9 @@ if(NYX_BUILD_TESTS)
         tests/unit/test_annotated_writer.cpp
         tests/unit/test_ssa_builder.cpp
         tests/unit/test_calling_convention.cpp
+        tests/unit/test_ssa_optimizer.cpp
+        tests/unit/test_region_builder.cpp
+        tests/unit/test_wasm_parser.cpp
         tests/unit/test_json_writer.cpp
         tests/unit/test_text_writer.cpp
         tests/unit/test_pseudo_c_writer.cpp

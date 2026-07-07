@@ -22,7 +22,9 @@
 #include "nyx/core/logger.hpp"
 #include "nyx/core/types.hpp"
 #include "nyx/decompiler/decompiler.hpp"
+#include "nyx/decompiler/pseudo_c.hpp"
 #include "nyx/lifter/cfg_analysis.hpp"
+#include "nyx/lifter/ssa_optimizer.hpp"
 #include "nyx/output/json_writer.hpp"
 #include "nyx/output/pseudo_c_writer.hpp"
 #include "nyx/output/text_writer.hpp"
@@ -36,6 +38,7 @@
 #include <fstream>
 #include <iostream>
 #include <ostream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,6 +60,8 @@ struct CliArgs {
     /// auto-detected (e.g. separate debug file path). For v0.0.6 this
     /// is a hint; actual separate-file support is on the roadmap.
     bool        force_dwarf  = false;
+    /// v0.2.0: enable SSA optimizations (constant folding, DCE, simplify).
+    bool        optimize = false;
 };
 
 void print_help(std::ostream& os) {
@@ -77,6 +82,7 @@ void print_help(std::ostream& os) {
        << "      --arch <name>       Override architecture detection (x86, x86-64, arm, ...).\n"
        << "      --format-hint <fmt> Override format detection (elf|pe|mach-o).\n"
        << "      --debug-info        Force DWARF loading (alias: --dwarf).\n"
+       << "  -O1, --optimize         Enable SSA optimizations (const fold, DCE).\n"
        << "\n"
        << "Exit codes:\n"
        << "   0  success\n"
@@ -114,6 +120,8 @@ int parse_args(int argc, char** argv, CliArgs& out) {
             out.force_format = std::string(args[i]);
         } else if (a == "--debug-info" || a == "--dwarf") {
             out.force_dwarf = true;
+        } else if (a == "-O1" || a == "-O" || a == "--optimize") {
+            out.optimize = true;
         } else if (a.empty()) {
             // skip
         } else if (a[0] == '-') {
@@ -233,6 +241,31 @@ int main(int argc, char** argv) {
         opts.max_insns_per_function = 5000;
         nyx::Decompiler dec(opts);
         auto functions = dec.decompile(bin);
+
+        // v0.2.0: apply SSA optimizations if requested.
+        if (args.optimize) {
+            auto ir_fns = dec.decompile_ir(bin);
+            for (auto& fn : ir_fns) {
+                (void)nyx::ir::optimize(fn);
+            }
+            // Re-render the optimized functions.
+            functions.clear();
+            for (const auto& fn : ir_fns) {
+                nyx::DecompiledFunction df;
+                df.name = fn.name;
+                df.entry = fn.entry;
+                df.block_count = fn.block_count();
+                df.insn_count = fn.instruction_count();
+                auto dom = nyx::ir::compute_dominators(fn);
+                auto loops = nyx::ir::find_natural_loops(fn, dom);
+                std::string body = nyx::render_pseudo_c(fn, dom, loops);
+                std::istringstream iss(body);
+                std::string line;
+                while (std::getline(iss, line)) df.lines.push_back(line);
+                functions.push_back(std::move(df));
+            }
+            NYX_INFO("optimizations applied (-O1)");
+        }
 
         // Choose output sink.
         std::ofstream fout;
