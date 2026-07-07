@@ -8,6 +8,8 @@
 #include "nyx/core/logger.hpp"
 
 #include <algorithm>
+#include <cstdint>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace nyx::ir {
@@ -243,6 +245,112 @@ std::size_t dead_code_elimination_pass(Function& fn) {
 }
 
 // ---------------------------------------------------------------------------
+// dead_store_elimination_pass (v0.3.1)
+// ---------------------------------------------------------------------------
+// Within a single basic block, when a Store writes to a constant address
+// that was already written by an earlier Store in the same block — and no
+// Load from that address or Call has happened in between — the earlier
+// Store is dead (its value is unobservable) and can be removed. We only
+// model addresses that are fully known at compile time:
+//   * an Imm operand (`store(Imm(0x1000), v1)`), or
+//   * a Mem operand with no base and no index register (e.g.
+//     `Operand::mem(INVALID_VREG, 0x1000)`), which is how the lifter
+//     emits absolute-address stores.
+//
+// Stores through register addresses are too complex for v0.3.1 and are
+// ignored by this pass. Calls are conservatively treated as potentially
+// reading or writing any memory address, so they flush the entire map.
+// ---------------------------------------------------------------------------
+static bool store_address_is_constant(const Operand& addr) noexcept {
+    if (addr.kind == Operand::Kind::Imm) return true;
+    if (addr.kind == Operand::Kind::Mem
+        && addr.mem_base == INVALID_VREG
+        && addr.mem_index == INVALID_VREG) {
+        return true;
+    }
+    return false;
+}
+
+static std::uint64_t store_address_key(const Operand& addr) noexcept {
+    // Pre: store_address_is_constant(addr) is true.
+    if (addr.kind == Operand::Kind::Imm) {
+        return static_cast<std::uint64_t>(addr.imm_value);
+    }
+    return static_cast<std::uint64_t>(addr.mem_disp);
+}
+
+std::size_t dead_store_elimination_pass(Function& fn) {
+    std::size_t removed = 0;
+    for (auto& b : fn.blocks) {
+        auto& insns = b.instructions;
+        if (insns.empty()) continue;
+
+        // Map of constant-address key -> index of the most recent Store
+        // to that address (with no intervening Load/Call). When a new
+        // Store to the same key is encountered, the prior entry is
+        // marked for removal and replaced.
+        std::unordered_map<std::uint64_t, std::size_t> last_store;
+        std::unordered_set<std::size_t> dead_indexes;
+
+        for (std::size_t i = 0; i < insns.size(); ++i) {
+            auto& ins = insns[i];
+            if (ins.op == OpCode::Store && ins.operands.size() >= 1) {
+                const auto& addr = ins.operands[0];
+                if (store_address_is_constant(addr)) {
+                    auto key = store_address_key(addr);
+                    auto it = last_store.find(key);
+                    if (it != last_store.end()) {
+                        // Previous store to the same address with no
+                        // intervening Load or Call — it is dead.
+                        dead_indexes.insert(it->second);
+                        ++removed;
+                    }
+                    last_store[key] = i;
+                }
+                continue;
+            }
+            if (ins.op == OpCode::Load && ins.operands.size() >= 1) {
+                // A Load from a constant address observes any prior
+                // Store to that address, so the Store is no longer
+                // a candidate for elimination by future Stores.
+                const auto& addr = ins.operands[0];
+                if (store_address_is_constant(addr)) {
+                    last_store.erase(store_address_key(addr));
+                }
+                // Loads through register addresses are conservatively
+                // treated as reading from any tracked Store — flush.
+                continue;
+            }
+            if (ins.op == OpCode::Call) {
+                // Calls may read or write any memory location.
+                last_store.clear();
+                continue;
+            }
+            // Other opcodes (Mov, arithmetic, Branch, Return, Push, Pop,
+            // etc.) do not access tracked memory addresses, so the map
+            // stays unchanged.
+        }
+
+        if (dead_indexes.empty()) continue;
+
+        // Rewrite the block without the dead stores. We can't use
+        // std::remove_if with a predicate that depends on indexes
+        // because indexes shift after removal, so we build a new vector.
+        std::vector<Instruction> kept;
+        kept.reserve(insns.size() - dead_indexes.size());
+        for (std::size_t i = 0; i < insns.size(); ++i) {
+            if (dead_indexes.count(i)) continue;
+            kept.push_back(std::move(insns[i]));
+        }
+        insns = std::move(kept);
+    }
+    if (removed > 0) {
+        NYX_INFO("SSA opt: dead store elimination removed " + std::to_string(removed) + " stores");
+    }
+    return removed;
+}
+
+// ---------------------------------------------------------------------------
 // optimize (fixpoint)
 // ---------------------------------------------------------------------------
 std::size_t optimize(Function& fn, const OptimizationOptions& opts) {
@@ -251,6 +359,7 @@ std::size_t optimize(Function& fn, const OptimizationOptions& opts) {
         std::size_t changed = 0;
         if (opts.constant_folding)    changed += constant_folding_pass(fn);
         if (opts.expr_simplification) changed += expression_simplification_pass(fn);
+        if (opts.dead_store_elim)     changed += dead_store_elimination_pass(fn);
         if (opts.dead_code_elim)      changed += dead_code_elimination_pass(fn);
         total += changed;
         if (changed == 0) break;

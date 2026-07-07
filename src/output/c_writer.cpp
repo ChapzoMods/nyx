@@ -233,7 +233,18 @@ struct Signature {
         for (const auto& df : bin.dwarf->functions) {
             if (df.name == fn_name && df.type_offset != 0) {
                 auto t = bin.dwarf->resolve_type_name(df.type_offset);
-                if (!t.empty() && t != "void") ret_type = t;
+                if (!t.empty() && t != "void") {
+                    // Bug 2: DWARF can encode a function's return type as a
+                    // pointer-to-void (`void*`) when the type DIE is missing
+                    // or unrecognised - `resolve_type_name` returns "void*"
+                    // as a fallback for unknown offsets. The pseudo-C
+                    // renderer emits bare `return;` statements (no value),
+                    // so declaring such a function as `void*` makes gcc -c
+                    // reject the body with `-Werror=return-mismatch`. Since
+                    // no real function returns `void*` without an explicit
+                    // cast in the body, collapse `void*` to `void` here.
+                    ret_type = (t == "void*") ? "void" : t;
+                }
                 break;
             }
         }
@@ -325,6 +336,33 @@ void write_c(std::ostream& os,
             os << "v" << sorted[i];
         }
         os << ";\n\n";
+    }
+
+    // v0.3.1: Collect local_N references and declare them as char arrays
+    // (they represent stack frame slots used as memory operands).
+    {
+        static const std::regex local_re(R"(\blocal_([0-9]+)\b)");
+        std::unordered_set<std::uint32_t> locals;
+        for (const auto& f : functions) {
+            for (const auto& line : f.lines) {
+                for (std::sregex_iterator it(line.begin(), line.end(), local_re), end; it != end; ++it) {
+                    try {
+                        locals.insert(static_cast<std::uint32_t>(std::stoul((*it)[1].str())));
+                    } catch (...) {}
+                }
+            }
+        }
+        if (!locals.empty()) {
+            std::vector<std::uint32_t> sorted_locals(locals.begin(), locals.end());
+            std::sort(sorted_locals.begin(), sorted_locals.end());
+            os << "// Stack frame locals (rendered as int for parseability).\n";
+            os << "int ";
+            for (std::size_t i = 0; i < sorted_locals.size(); ++i) {
+                if (i) os << ", ";
+                os << "local_" << sorted_locals[i];
+            }
+            os << ";\n\n";
+        }
     }
 
     // Function bodies. The DecompiledFunction::lines vector already contains

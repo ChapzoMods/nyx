@@ -6,6 +6,38 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.3.1] - 2026-07-07
+
+Hotfix: duplicate block labels, DWARF void* return type, stack frame
+reconstruction, dead store elimination, regression test 36/36.
+
+### Fixed
+
+- **Duplicate block labels in do-while** — `render_region` now tracks
+  which block indices have already been rendered via a `rendered` set,
+  preventing the same block from appearing twice in structured output.
+- **DWARF void* return type** — `compute_signature` in the C writer now
+  replaces `"void*"` with `"void"` for function return types, preventing
+  `gcc -c` from failing with `-Wreturn-mismatch` on functions that have
+  `return;` without a value.
+- **Regression test 36/36** — All 6 formats x 6 fixtures pass, including
+  `gcc -c` verification for `--format c` on every fixture.
+
+### Added
+
+- **Stack frame reconstruction** — `render_operand` now replaces
+  negative-displacement memory operands (e.g. `*(void*)(v1 - 4)`) with
+  named locals (`local_4`), improving pseudo-C readability. The C writer
+  declares these as `int local_N;` globals.
+- **Dead store elimination** — New `dead_store_elimination_pass` in the
+  SSA optimizer that removes redundant Store instructions to constant
+  addresses when no Load happens between them. Integrated into the
+  `optimize()` fixpoint loop with the `-O1` flag.
+
+### Changed
+
+- Output writers and `nyx --version` now report `0.3.1`.
+
 ## [0.3.0] - 2026-07-07
 
 Major release: all v0.2.2 bugs fixed, WASM end-to-end decompilation,

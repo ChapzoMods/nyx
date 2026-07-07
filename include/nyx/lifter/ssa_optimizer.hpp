@@ -20,6 +20,7 @@ struct OptimizationOptions {
     bool constant_folding  = true;  // fold arithmetic on immediates
     bool dead_code_elim    = true;  // remove stores/phis whose result is unused
     bool expr_simplification = true; // v1 + 0 -> v1, v1 * 1 -> v1, etc.
+    bool dead_store_elim   = true;  // v0.3.1: redundant Store-to-same-address
 };
 
 /// Runs all enabled optimization passes on `fn` until no more changes
@@ -39,5 +40,13 @@ struct OptimizationOptions {
 /// Expression simplification: replaces patterns like `v1 + 0`, `v1 * 1`,
 /// `v1 - 0`, `v1 | 0`, `v1 & 0xFF..FF` with simpler forms.
 [[nodiscard]] std::size_t expression_simplification_pass(Function& fn);
+
+/// v0.3.1: Dead store elimination. Within a single basic block, if two
+/// Store instructions write to the same constant address (Imm operand)
+/// and no Load from that address or Call happens between them, the
+/// first store is redundant and is removed. Stores through register
+/// addresses are not modelled in v0.3.1 — only literal-address stores
+/// are tracked. Returns the number of stores removed.
+[[nodiscard]] std::size_t dead_store_elimination_pass(Function& fn);
 
 }  // namespace nyx::ir

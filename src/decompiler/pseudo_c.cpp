@@ -42,6 +42,21 @@ std::string_view op_name_short(ir::OpCode op) noexcept {
     }
 }
 
+// v0.3.1: stack frame reconstruction. When the lifter emits a memory
+// operand with a negative displacement from the frame-pointer vreg
+// (e.g. `[rbp - 0x10]`), we want the pseudo-C output to mention a named
+// local rather than a raw hex offset. We map each negative displacement
+// to a synthetic `local_N` identifier so the rendered C reads more like
+// the original source. Returns an empty string when `disp >= 0` so the
+// caller can fall back to the generic Mem rendering.
+static std::string frame_local_name(std::int64_t disp) {
+    if (disp >= 0) return {};
+    // Convert negative displacement to local_N name. The magnitude is
+    // what the user-facing name carries (e.g. -4 -> local_4).
+    std::int64_t offset = -disp;
+    return "local_" + std::to_string(offset);
+}
+
 std::string render_operand(const ir::Operand& o) {
     switch (o.kind) {
         case ir::Operand::Kind::Register:
@@ -49,6 +64,23 @@ std::string render_operand(const ir::Operand& o) {
         case ir::Operand::Kind::Imm:
             return to_hex(static_cast<std::uint64_t>(o.imm_value), 0, true);
         case ir::Operand::Kind::Mem: {
+            // v0.3.1: stack frame reconstruction. A Mem operand with a
+            // negative displacement from a frame-pointer vreg (e.g.
+            // `[rbp - 4]` lifted as Mem{base=v1, disp=-4}) is rendered as
+            // a named local (`local_4`) instead of the raw hex offset.
+            // This makes the pseudo-C output significantly more readable
+            // for stack slots. We only apply the rewrite when the operand
+            // has no index register — indexed addressing through the
+            // frame pointer is rare in real binaries and would need a
+            // different surface syntax.
+            if (o.mem_disp < 0
+                && o.mem_base != ir::INVALID_VREG
+                && o.mem_index == ir::INVALID_VREG) {
+                auto name = frame_local_name(o.mem_disp);
+                if (!name.empty()) {
+                    return name;
+                }
+            }
             std::string s = "*(";
             // size hint
             switch (o.mem_size) {

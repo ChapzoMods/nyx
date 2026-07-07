@@ -323,7 +323,8 @@ std::string render_condition(const std::optional<VReg>& cond) {
 }
 
 void render_region(std::ostringstream& os, const Function& fn, const Region& r,
-                   int indent, const LoopContext* lc = nullptr) {
+                   int indent, std::unordered_set<std::size_t>& rendered,
+                   const LoopContext* lc = nullptr) {
     auto pad = [&os, indent]() {
         for (int i = 0; i < indent; ++i) os << "  ";
     };
@@ -331,6 +332,15 @@ void render_region(std::ostringstream& os, const Function& fn, const Region& r,
     switch (r.kind) {
         case Region::Kind::Block: {
             if (r.block_idx >= fn.blocks.size()) break;
+            // Bug 1: a block can be referenced by more than one region (e.g.
+            // as the then-block of two separate if/else regions that both
+            // converge on the same return). The structuring pass already
+            // marks such blocks as `assigned`, but a block can still be
+            // listed as a child of multiple regions. Tracking rendered
+            // block indices here ensures each label is emitted at most once,
+            // so the pseudo-C output never has a duplicate `L_xxx:` label.
+            if (rendered.count(r.block_idx)) break;
+            rendered.insert(r.block_idx);
             const auto& b = fn.blocks[r.block_idx];
             pad(); os << "L_" << std::hex << b.start_addr << std::dec << ":\n";
             for (std::size_t k = 0; k < b.instructions.size(); ++k) {
@@ -374,11 +384,7 @@ void render_region(std::ostringstream& os, const Function& fn, const Region& r,
                 pad();
                 os << "if (" << render_condition(r.condition) << ") {\n";
                 for (const auto& c : r.children) {
-                    if (c->kind == Region::Kind::Block && !c->children.empty()) {
-                        // Skip the condition block (first child) in the body.
-                        continue;
-                    }
-                    render_region(os, fn, *c, indent + 1, lc);
+                    render_region(os, fn, *c, indent + 1, rendered, lc);
                 }
                 pad(); os << "}\n";
             }
@@ -388,9 +394,9 @@ void render_region(std::ostringstream& os, const Function& fn, const Region& r,
             if (r.children.size() >= 3) {
                 pad();
                 os << "if (" << render_condition(r.condition) << ") {\n";
-                render_region(os, fn, *r.children[1], indent + 1, lc);
+                render_region(os, fn, *r.children[1], indent + 1, rendered, lc);
                 pad(); os << "} else {\n";
-                render_region(os, fn, *r.children[2], indent + 1, lc);
+                render_region(os, fn, *r.children[2], indent + 1, rendered, lc);
                 pad(); os << "}\n";
             }
             break;
@@ -412,7 +418,7 @@ void render_region(std::ostringstream& os, const Function& fn, const Region& r,
             os << "while (" << render_condition(r.condition) << ") {\n";
             for (std::size_t ci = 0; ci < r.children.size(); ++ci) {
                 if (ci == 0) continue;  // skip header block
-                render_region(os, fn, *r.children[ci], indent + 1, &loop_lc);
+                render_region(os, fn, *r.children[ci], indent + 1, rendered, &loop_lc);
             }
             pad(); os << "}\n";
             break;
@@ -431,7 +437,7 @@ void render_region(std::ostringstream& os, const Function& fn, const Region& r,
             }
             pad(); os << "do {\n";
             for (const auto& c : r.children) {
-                render_region(os, fn, *c, indent + 1, &loop_lc);
+                render_region(os, fn, *c, indent + 1, rendered, &loop_lc);
             }
             pad();
             os << "} while (" << render_condition(r.condition) << ");\n";
@@ -440,7 +446,7 @@ void render_region(std::ostringstream& os, const Function& fn, const Region& r,
         case Region::Kind::Switch:
         case Region::Kind::Sequence: {
             for (const auto& c : r.children) {
-                render_region(os, fn, *c, indent, lc);
+                render_region(os, fn, *c, indent, rendered, lc);
             }
             break;
         }
@@ -458,7 +464,13 @@ std::string render_structured(const Function& fn, const Region& root) {
     os << "// Function: " << (fn.name.empty() ? "sub" : fn.name) << "\n";
     os << "// Entry: 0x" << std::hex << fn.entry << std::dec << "\n";
     os << "void " << (fn.name.empty() ? "sub" : fn.name) << "(void) {\n";
-    render_region(os, fn, root, 1);
+    // Bug 1: track which block indices have already been rendered so a block
+    // that appears as a child of multiple regions (e.g. two if/else regions
+    // that both converge on the same return) is only emitted once. Without
+    // this, the pseudo-C output can contain duplicate `L_xxx:` labels, which
+    // makes `gcc -c` reject the generated file.
+    std::unordered_set<std::size_t> rendered;
+    render_region(os, fn, root, 1, rendered);
     os << "}\n";
     return os.str();
 }
