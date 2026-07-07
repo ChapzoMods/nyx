@@ -225,6 +225,52 @@ void emit_function_body(std::ostream& os, const DecompiledFunction& f,
     os << "}\n";
 }
 
+/// v0.4.1: Real parameter identification for the C writer. The writer does
+/// not have access to the IR Function (only the rendered pseudo-C lines),
+/// so we re-derive the parameter count by scanning the body lines for
+/// `vN` references that appear BEFORE any definition of the same vreg.
+/// Each such vreg is treated as a parameter, capped at the calling
+/// convention's `max_reg_args`. The signature line itself (e.g.
+/// `int add(int param0, int param1) {`) is ignored because the regex only
+/// matches `vN` identifiers, not `paramN`.
+[[nodiscard]] int detect_param_count_from_lines(const std::vector<std::string>& lines,
+                                                 const BinaryInfo& bin) {
+    auto cc = default_calling_convention(bin.arch);
+    std::unordered_set<std::uint32_t> defined;
+    std::unordered_set<std::uint32_t> used_before_def;
+    static const std::regex vre(R"(\bv([0-9]+)\b)");
+    static const std::regex def_re(R"(^\s*v([0-9]+)\s*=)");
+
+    std::size_t scanned = 0;
+    for (const auto& line : lines) {
+        if (scanned >= 12) break;
+        ++scanned;
+        // Skip the signature line - it ends with `{` and contains `(`.
+        // The vN regex would not match paramN anyway, but skipping keeps
+        // the heuristic stable when the renderer emits parameter names
+        // that happen to contain `vN` substrings in the future.
+        if (line.find(") {") != std::string::npos) continue;
+
+        // Find every vN on the line and treat each as a use.
+        for (std::sregex_iterator it(line.begin(), line.end(), vre), end; it != end; ++it) {
+            try {
+                const auto v = static_cast<std::uint32_t>(std::stoul((*it)[1].str()));
+                if (!defined.count(v)) used_before_def.insert(v);
+            } catch (...) {}
+        }
+        // If this line defines a vN (matches `  vN = ...`), mark it defined.
+        std::smatch m;
+        if (std::regex_search(line, m, def_re)) {
+            try {
+                const auto v = static_cast<std::uint32_t>(std::stoul(m[1].str()));
+                defined.insert(v);
+            } catch (...) {}
+        }
+    }
+    int cap = (cc.max_reg_args > 0) ? cc.max_reg_args : 6;
+    return std::min(static_cast<int>(used_before_def.size()), cap);
+}
+
 /// v0.1.0: Computes the C function signature for a decompiled function
 /// based on the binary's calling convention and (if available) DWARF type
 /// info. Returns {return_type, params_string}.
@@ -234,16 +280,19 @@ void emit_function_body(std::ostream& os, const DecompiledFunction& f,
 ///     really do return int, and the IR renderer emits bare `return;`
 ///     statements which are valid in `int` functions (they return an
 ///     undefined value, but compile cleanly with `gcc -c`).
-///   - Parameters: when DWARF provides formal_parameter info we use it;
-///     otherwise we emit `void`. The previous behaviour of always guessing
-///     `int param1..4` produced uncompilable output whenever the real
-///     function took a different number of arguments.
+///   - Parameters: v0.4.1 derives the count by scanning the rendered body
+///     for vregs that are used before being defined. Each such vreg is
+///     treated as a parameter, capped at the calling convention's
+///     max_reg_args. DWARF formal_parameter info is not yet exposed by
+///     the parser, so the data-flow heuristic is the primary source.
 struct Signature {
     std::string return_type;
     std::string params;
 };
 
-[[nodiscard]] Signature compute_signature(const BinaryInfo& bin, const std::string& fn_name) {
+[[nodiscard]] Signature compute_signature(const BinaryInfo& bin,
+                                          const std::string& fn_name,
+                                          const std::vector<std::string>& body_lines) {
     // Determine return type. Default to `int` so bare `return;` statements
     // emitted by the IR renderer compile cleanly (a bare `return;` in an
     // `int` function returns an undefined value, which is legal C). When
@@ -273,27 +322,18 @@ struct Signature {
         }
     }
 
-    // Determine parameters. The previous behaviour unconditionally emitted
-    // up to `cc.max_reg_args` (capped at 4) explicit `int paramN` arguments,
-    // which produced incorrect signatures for functions that took fewer (or
-    // no) arguments and made the generated file fail to compile with
-    // `gcc -c` whenever a call site passed a different argument count.
-    //
-    // Bug 3: prefer DWARF type info when available. The current DWARF
-    // parser does not yet expose formal_parameter children, so we cannot
-    // build the real parameter list - in that case we conservatively emit
-    // `void`, which is always safe and never produces a mismatched-call
-    // error. When parameter info is eventually added, this branch can be
-    // extended to emit the real list.
+    // Determine parameters. v0.4.1: scan the rendered body for vregs used
+    // before defined, capped at the calling convention's max_reg_args.
+    // When no vregs are detected (e.g. the function truly takes no args,
+    // or the body is empty), we conservatively emit `void`, which is
+    // always safe and never produces a mismatched-call error.
     std::string params = "void";
-    if (bin.dwarf) {
-        for (const auto& df : bin.dwarf->functions) {
-            if (df.name == fn_name) {
-                // Future: derive the parameter count from the DWARF
-                // subroutine_type's formal_parameter children. For now we
-                // fall through to `void`.
-                break;
-            }
+    const int nparams = detect_param_count_from_lines(body_lines, bin);
+    if (nparams > 0) {
+        params.clear();
+        for (int i = 0; i < nparams; ++i) {
+            if (i > 0) params += ", ";
+            params += "int param" + std::to_string(i);
         }
     }
 
@@ -334,7 +374,7 @@ void write_c(std::ostream& os,
     os << "// Forward declarations.\n";
     for (const auto& f : functions) {
         if (!is_valid_c_ident(f.name)) continue;
-        const auto sig = compute_signature(bin, f.name);
+        const auto sig = compute_signature(bin, f.name, f.lines);
         os << sig.return_type << " " << f.name << "(" << sig.params << ");\n";
     }
     os << "\n";
@@ -397,7 +437,7 @@ void write_c(std::ostream& os,
     // structured CFG renderer.
     for (const auto& f : functions) {
         os << "// ---- " << f.name << " @ " << to_hex(f.entry, 0, true) << " ----\n";
-        const auto sig = compute_signature(bin, f.name);
+        const auto sig = compute_signature(bin, f.name, f.lines);
         os << sig.return_type << " " << f.name << "(" << sig.params << ") {\n";
         // v0.1.0: when the function returns non-void, the IR renderer's bare
         // `return;` statements must be rewritten to `return 0;` so the body

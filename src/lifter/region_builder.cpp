@@ -305,6 +305,35 @@ std::unique_ptr<Region> structure_cfg(
 // ---------------------------------------------------------------------------
 namespace {
 
+/// v0.4.1: Real parameter identification. Same data-flow heuristic as the
+/// one in pseudo_c.cpp: scan the first basic block's instructions in order
+/// and collect the set of vregs that are READ before being WRITTEN. Each
+/// such vreg is treated as a parameter, capped at the calling convention's
+/// `max_reg_args`. The region builder does not have access to the
+/// BinaryInfo (it lives in the ir namespace), so we fall back to a cap of
+/// 6 when the calling convention is Unknown.
+static int detect_param_count(const Function& fn) {
+    auto cc = nyx::default_calling_convention(nyx::Arch::Unknown);
+    if (fn.blocks.empty()) return 0;
+    const auto& first_block = fn.blocks[0];
+    std::unordered_set<VReg> defined;
+    std::unordered_set<VReg> used_before_def;
+
+    for (std::size_t i = 0; i < first_block.instructions.size() && i < 10; ++i) {
+        const auto& ins = first_block.instructions[i];
+        for (const auto& op : ins.operands) {
+            if (op.kind == Operand::Kind::Register && op.vreg != INVALID_VREG) {
+                if (!defined.count(op.vreg)) used_before_def.insert(op.vreg);
+            }
+        }
+        if (ins.dst != INVALID_VREG) {
+            defined.insert(ins.dst);
+        }
+    }
+    int cap = (cc.max_reg_args > 0) ? cc.max_reg_args : 6;
+    return std::min(static_cast<int>(used_before_def.size()), cap);
+}
+
 /// Bug D: loop context propagated into render_region so that unconditional
 /// Branch instructions inside a loop body can be rendered as `continue;`
 /// (when the target is the loop header) or `break;` (when the target is
@@ -464,14 +493,25 @@ std::string render_structured(const Function& fn, const Region& root) {
     std::ostringstream os;
     os << "// Function: " << (fn.name.empty() ? "sub" : fn.name) << "\n";
     os << "// Entry: 0x" << std::hex << fn.entry << std::dec << "\n";
-    // v0.4.0: stack frame reconstruction alignment with the pseudo-C renderer.
+    // v0.4.1: stack frame reconstruction alignment with the pseudo-C renderer.
     // The structured renderer used to emit `void funcname(void)`, which
     // mismatches the pseudo-C renderer's calling-convention-aware signature
     // (default return type `int` so that the bare `return;` statements the
     // IR lifter produces compile cleanly under C rules). We now match that
     // behaviour here so both backends produce consistent, gcc-compilable C.
+    // Parameter count comes from the same data-flow heuristic as
+    // render_pseudo_c (vregs read before written in the first block).
     std::string ret_type = "int";
-    os << ret_type << " " << (fn.name.empty() ? "sub" : fn.name) << "(void) {\n";
+    std::string params = "void";
+    int nparams = detect_param_count(fn);
+    if (nparams > 0) {
+        params.clear();
+        for (int i = 0; i < nparams; ++i) {
+            if (i > 0) params += ", ";
+            params += "int param" + std::to_string(i);
+        }
+    }
+    os << ret_type << " " << (fn.name.empty() ? "sub" : fn.name) << "(" << params << ") {\n";
     // Bug 1: track which block indices have already been rendered so a block
     // that appears as a child of multiple regions (e.g. two if/else regions
     // that both converge on the same return) is only emitted once. Without

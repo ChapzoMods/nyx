@@ -77,7 +77,33 @@ void TypeInferer::infer(ir::Function& fn) const {
                     const auto& src = ins.operands[0];
                     if (src.kind == ir::Operand::Kind::Imm) {
                         inferred = type_from_imm(src.imm_value);
+                        // v0.4.1: if the immediate is a known .rodata
+                        // string address, the destination is a pointer
+                        // (char* / void*). This catches the common
+                        // `lea rax, [rip + str]` pattern that the lifter
+                        // may emit as Mov dst, Imm(str_addr).
+                        if (bin_) {
+                            const auto addr = static_cast<std::uint64_t>(src.imm_value);
+                            if (bin_->rodata_strings.count(addr)) {
+                                inferred = ir::Type::Ptr;
+                            }
+                        }
                     } else if (src.kind == ir::Operand::Kind::Symbol) {
+                        // v0.4.1: well-known libc allocator functions
+                        // return pointers. strlen returns size_t
+                        // (Int64 on 64-bit). These are common enough
+                        // that hard-coding them pays for itself in
+                        // readable output.
+                        if (src.symbol == "malloc"
+                            || src.symbol == "calloc"
+                            || src.symbol == "realloc") {
+                            inferred = ir::Type::Ptr;
+                            break;
+                        }
+                        if (src.symbol == "strlen") {
+                            inferred = ir::Type::Int64;
+                            break;
+                        }
                         // Look up the symbol by name.
                         if (bin_) {
                             for (const auto& s : bin_->symbols) {
@@ -103,6 +129,13 @@ void TypeInferer::infer(ir::Function& fn) const {
                         // but the generic Mov case still applies for LEA-
                         // style patterns where the lifter emitted Mov.
                         inferred = type_from_size(src.mem_size);
+                        // v0.4.1: a LEA from a known rodata address yields
+                        // a pointer to the string.
+                        if (bin_ && src.mem_disp != 0
+                            && bin_->rodata_strings.count(
+                                static_cast<std::uint64_t>(src.mem_disp))) {
+                            inferred = ir::Type::Ptr;
+                        }
                     }
                     break;
                 }
@@ -126,6 +159,18 @@ void TypeInferer::infer(ir::Function& fn) const {
                         if (inferred == ir::Type::Unknown && bin_ && addr.mem_disp != 0) {
                             const auto t = type_from_symbol(static_cast<std::uint64_t>(addr.mem_disp));
                             if (t != ir::Type::Unknown) inferred = t;
+                        }
+                        // v0.4.1: a load whose address is a known rodata
+                        // string yields a pointer (the loaded value is
+                        // typically a pointer-sized chunk of the string
+                        // table, e.g. the first qword of a string literal
+                        // used as a flag). We model this conservatively
+                        // as Ptr so downstream output uses pointer-sized
+                        // declarations.
+                        if (bin_ && addr.mem_disp != 0
+                            && bin_->rodata_strings.count(
+                                static_cast<std::uint64_t>(addr.mem_disp))) {
+                            inferred = ir::Type::Ptr;
                         }
                     }
                     break;

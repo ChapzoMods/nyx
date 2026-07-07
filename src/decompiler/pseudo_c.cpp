@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace nyx {
@@ -58,6 +59,43 @@ static std::string frame_local_name(std::int64_t disp) {
     // what the user-facing name carries (e.g. -4 -> local_4).
     std::int64_t offset = -disp;
     return "local_" + std::to_string(offset);
+}
+
+// v0.4.1: Real parameter identification. The lifter loses the machine
+// register name by the time the IR is built, so we use a conservative
+// data-flow heuristic: scan the first basic block's instructions in order
+// and collect the set of vregs that are READ before being WRITTEN. Each
+// such vreg must come from outside the function (either an argument
+// register or a register live on entry, e.g. the stack pointer), so we
+// treat the count as the upper bound on the parameter count.
+//
+// The count is capped at `cc.max_reg_args` (6 for SysV AMD64, 8 for
+// ARM64, etc.) so we never emit more parameters than the calling
+// convention allows.
+static int detect_param_count(const ir::Function& fn, const CallConventionInfo& cc) {
+    if (fn.blocks.empty()) return 0;
+    const auto& first_block = fn.blocks[0];
+    std::unordered_set<ir::VReg> defined;
+    std::unordered_set<ir::VReg> used_before_def;
+
+    for (std::size_t i = 0; i < first_block.instructions.size() && i < 10; ++i) {
+        const auto& ins = first_block.instructions[i];
+        // Check source operands (Register only; Mem base/index would
+        // also include the frame pointer, which is not a parameter).
+        for (const auto& op : ins.operands) {
+            if (op.kind == ir::Operand::Kind::Register && op.vreg != ir::INVALID_VREG) {
+                if (!defined.count(op.vreg)) {
+                    used_before_def.insert(op.vreg);
+                }
+            }
+        }
+        // Mark destination as defined.
+        if (ins.dst != ir::INVALID_VREG) {
+            defined.insert(ins.dst);
+        }
+    }
+    int cap = (cc.max_reg_args > 0) ? cc.max_reg_args : 6;
+    return std::min(static_cast<int>(used_before_def.size()), cap);
 }
 
 std::string render_operand(const ir::Operand& o) {
@@ -396,18 +434,23 @@ std::string render_pseudo_c(const ir::Function& fn,
     if (!loops.empty()) {
         os << "// Loops: " << loops.size() << "\n";
     }
-    // v0.1.0: derive the function signature from the binary's calling
-    // convention and (when present) DWARF type info. We default to
-    // `int` for the return type because the IR renderer emits bare
-    // `return;` statements which compile cleanly in `int` functions,
-    // and most C functions really do return int. When DWARF provides
-    // a non-void return type we use that instead. Parameters are
-    // conservatively `(void)` until the DWARF parser learns how to
-    // expose formal_parameter children.
+    // v0.4.1: derive the function signature from the binary's calling
+    // convention and the data-flow heuristic in detect_param_count. The
+    // return type defaults to `int` so the IR renderer's bare `return;`
+    // statements compile cleanly. When DWARF provides a non-void return
+    // type we use that instead. Parameter count comes from
+    // detect_param_count (vregs read before written in the first block).
     auto cc = default_calling_convention(g_current_bin ? g_current_bin->arch : Arch::Unknown);
-    (void)cc;  // reserved for future parameter-list reconstruction
     std::string ret_type = "int";
     std::string params = "void";
+    int nparams = detect_param_count(fn, cc);
+    if (nparams > 0) {
+        params.clear();
+        for (int i = 0; i < nparams; ++i) {
+            if (i > 0) params += ", ";
+            params += "int param" + std::to_string(i);
+        }
+    }
     // If we have DWARF, try to get return type.
     if (g_current_bin && g_current_bin->dwarf) {
         for (const auto& df : g_current_bin->dwarf->functions) {

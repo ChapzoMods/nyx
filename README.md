@@ -14,7 +14,7 @@ interactive one.
 
 - **Author:** Chapzoo
 - **License:** GNU GPL v3.0 or later
-- **Status:** v0.4.0 - type recovery + calling convention + stack frame + DSE: function merging, WASM, C CC + features, see the [Roadmap](#roadmap) below
+- **Status:** v0.4.1 - real parameter ID + type recovery + calling convention + stack frame + DSE: function merging, WASM, C CC + features, see the [Roadmap](#roadmap) below
 - **Repository:** <https://github.com/Chapzoo/nyx>
 
 ---
@@ -59,7 +59,7 @@ to be the right tool for the cases where you do not need Ghidra.
 
 ## Features
 
-### v0.4.0 (current) - type recovery + calling convention
+### v0.4.1 (current) - real parameter ID + type recovery
 
 - **Three binary formats** parsed natively in C++20 (no libelf, no
   libpe, no libmacho dependency):

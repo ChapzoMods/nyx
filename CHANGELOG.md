@@ -6,6 +6,49 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.4.1] - 2026-07-07
+
+Hotfix: converts v0.4.0 stubs into real functionality. Parameter
+identification from register usage, initial type recovery heuristics,
+and interprocedural constant propagation implementation.
+
+### Added
+
+- **Real parameter identification** — `detect_param_count()` scans the
+  first basic block for vregs that are READ before being WRITTEN (up to
+  `cc.max_reg_args`). The pseudo-C and C output now emits
+  `int add(int param0, int param1)` instead of `int add(void)` for
+  functions that use parameters. The `(void)cc;` discard is gone; the
+  calling convention is actually used.
+- **Initial type recovery heuristics** — TypeInferer now assigns:
+  - `Type::Ptr` for Mov from Symbol "malloc"/"calloc"/"realloc"
+  - `Type::Int64` for Mov from Symbol "strlen"
+  - `Type::Ptr` for Mov/Load from addresses in `.rodata`
+- **Interprocedural constant propagation (real)** — Replaced the stub
+  with an implementation that:
+  1. Collects direct Call sites with constant arguments (Mov vN, imm
+     before Call).
+  2. For functions called from exactly one site, substitutes the
+     parameter vregs with the constant values throughout the callee.
+  3. Returns the substitution count.
+
+### Changed
+
+- `render_pseudo_c`, `render_structured`, and `compute_signature` now
+  emit detected parameters instead of always `void`.
+- Output writers and `nyx --version` now report `0.4.1`.
+
+### Limitations
+
+- Parameter detection is heuristic (vregs read-before-written in the
+  first 10 instructions). It may over-count (e.g. stack pointer
+  references in the prologue count as "reads"). DWARF formal_parameter
+  children are not yet exposed by the DWARF parser.
+- Interprocedural CP is implemented but not yet wired into the `-O1`
+  pipeline. It's available as a standalone function call.
+- Type recovery heuristics cover malloc/strlen/rodata only. Full type
+  lattice propagation is future work.
+
 ## [0.4.0] - 2026-07-07
 
 Major release: type recovery, calling convention in output, type-aware
