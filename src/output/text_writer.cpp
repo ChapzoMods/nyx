@@ -92,6 +92,19 @@ void write_text(std::ostream& os,
             // reset sticky formatting before printing mnemonic + op_str
             os << std::dec << std::setfill(' ') << std::left << std::setw(8) << in.mnemonic
                << " " << in.op_str;
+            // v0.2.1: resolve direct call targets to a symbol name when one
+            // is available - covers x86 `call`, ARM `bl` and RISC-V/MIPS `jal`.
+            if (in.mnemonic == "call" || in.mnemonic == "bl" || in.mnemonic == "jal") {
+                auto tgt = in.direct_target();
+                if (tgt) {
+                    for (const auto& sym : bin.symbols) {
+                        if (sym.value == *tgt && !sym.name.empty()) {
+                            os << "  ; " << sym.name;
+                            break;
+                        }
+                    }
+                }
+            }
             // v0.0.6: DWARF source annotation.
             if (bin.dwarf) {
                 auto entry = bin.dwarf->lookup_address(in.address);

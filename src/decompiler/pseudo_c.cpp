@@ -6,6 +6,7 @@
 #include "nyx/decompiler/pseudo_c.hpp"
 
 #include "nyx/core/bytes.hpp"
+#include "nyx/core/types.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -15,6 +16,14 @@
 #include <vector>
 
 namespace nyx {
+
+// v0.2.1: optional BinaryInfo used by render_instruction to resolve Call
+// targets to symbol names. Set via set_render_binary_info() before rendering
+// a function and reset to nullptr afterwards. Nullptr by default, which
+// reproduces the historical behaviour of emitting the raw immediate.
+static const BinaryInfo* g_current_bin = nullptr;
+
+void set_render_binary_info(const BinaryInfo* bin) { g_current_bin = bin; }
 
 std::string_view op_name_short(ir::OpCode op) noexcept {
     switch (op) {
@@ -125,7 +134,19 @@ std::string render_instruction(const ir::Instruction& i) {
                 os << "// indirect call via " << render_operand(i.operands[0]) << "\n";
                 os << "    call(*(" << render_operand(i.operands[0]) << "));  // indirect";
             } else {
-                os << "call(" << render_operand(i.operands[0]) << ");";
+                std::string call_target = render_operand(i.operands[0]);
+                // v0.2.1: try to resolve the target to a symbol name.
+                if (g_current_bin && !i.operands.empty()
+                    && i.operands[0].kind == ir::Operand::Kind::Imm) {
+                    for (const auto& sym : g_current_bin->symbols) {
+                        if (sym.value == static_cast<std::uint64_t>(i.operands[0].imm_value)
+                            && !sym.name.empty()) {
+                            call_target = sym.name;
+                            break;
+                        }
+                    }
+                }
+                os << "call(" << call_target << ");";
             }
             break;
         case ir::OpCode::Return:

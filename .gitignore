@@ -37,3 +37,4 @@ tests/fixtures/sample.wasm
 compile_commands.json
 .cache/
 build_py/
+build_release/

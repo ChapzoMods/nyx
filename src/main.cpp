@@ -24,9 +24,11 @@
 #include "nyx/decompiler/decompiler.hpp"
 #include "nyx/decompiler/pseudo_c.hpp"
 #include "nyx/lifter/cfg_analysis.hpp"
+#include "nyx/lifter/region_builder.hpp"
 #include "nyx/lifter/ssa_optimizer.hpp"
 #include "nyx/output/json_writer.hpp"
 #include "nyx/output/pseudo_c_writer.hpp"
+#include "nyx/output/c_writer.hpp"
 #include "nyx/output/text_writer.hpp"
 #include "nyx/output/dot_writer.hpp"
 #include "nyx/output/annotated_writer.hpp"
@@ -41,6 +43,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace {
@@ -75,7 +78,7 @@ void print_help(std::ostream& os) {
        << "Options:\n"
        << "  -h, --help              Show this help and exit.\n"
        << "  -V, --version           Print the Nyx banner and exit.\n"
-       << "  -f, --format <fmt>      Output format: json | text | pseudo-c | dot | annotated (default: json).\n"
+       << "  -f, --format <fmt>      Output format: json | text | pseudo-c | c | dot | annotated (default: json).\n"
        << "  -o, --output <path>     Write output to <path> instead of stdout.\n"
        << "  -L, --log-level <lvl>   trace|debug|info|warn|error|critical (default: info).\n"
        << "  -q, --quiet             Alias for --log-level critical.\n"
@@ -242,6 +245,44 @@ int main(int argc, char** argv) {
         nyx::Decompiler dec(opts);
         auto functions = dec.decompile(bin);
 
+        // v0.2.0: structured pseudo-C rendering. We re-render each
+        // function's lines through the region builder (structure_cfg +
+        // render_structured) for nicer if/else/while/do-while output.
+        // When structuring yields an empty tree we fall back to the flat
+        // render_pseudo_c output so output is never worse than before.
+        //
+        // v0.2.1: keep g_current_bin set across both re-rendering phases
+        // (structured + optional -O1) so render_instruction can resolve
+        // Call targets to symbol names. decompile() above already manages
+        // this for its own internal render, but it clears the pointer on
+        // return; we re-arm it here and clear before writing output.
+        nyx::set_render_binary_info(&bin);
+        {
+            auto ir_fns = dec.decompile_ir(bin);
+            std::unordered_map<std::uint64_t, std::size_t> ir_by_entry;
+            for (std::size_t i = 0; i < ir_fns.size(); ++i) {
+                ir_by_entry[ir_fns[i].entry] = i;
+            }
+            for (auto& df : functions) {
+                auto it = ir_by_entry.find(df.entry);
+                if (it == ir_by_entry.end()) continue;
+                const auto& fn = ir_fns[it->second];
+                auto dom = nyx::ir::compute_dominators(fn);
+                auto loops = nyx::ir::find_natural_loops(fn, dom);
+                auto root = nyx::ir::structure_cfg(fn, dom, loops);
+                std::string body;
+                if (root && !root->children.empty()) {
+                    body = nyx::ir::render_structured(fn, *root);
+                } else {
+                    body = nyx::render_pseudo_c(fn, dom, loops);
+                }
+                df.lines.clear();
+                std::istringstream iss(body);
+                std::string line;
+                while (std::getline(iss, line)) df.lines.push_back(line);
+            }
+        }
+
         // v0.2.0: apply SSA optimizations if requested.
         if (args.optimize) {
             auto ir_fns = dec.decompile_ir(bin);
@@ -258,7 +299,13 @@ int main(int argc, char** argv) {
                 df.insn_count = fn.instruction_count();
                 auto dom = nyx::ir::compute_dominators(fn);
                 auto loops = nyx::ir::find_natural_loops(fn, dom);
-                std::string body = nyx::render_pseudo_c(fn, dom, loops);
+                auto root = nyx::ir::structure_cfg(fn, dom, loops);
+                std::string body;
+                if (root && !root->children.empty()) {
+                    body = nyx::ir::render_structured(fn, *root);
+                } else {
+                    body = nyx::render_pseudo_c(fn, dom, loops);
+                }
                 std::istringstream iss(body);
                 std::string line;
                 while (std::getline(iss, line)) df.lines.push_back(line);
@@ -266,6 +313,7 @@ int main(int argc, char** argv) {
             }
             NYX_INFO("optimizations applied (-O1)");
         }
+        nyx::set_render_binary_info(nullptr);
 
         // Choose output sink.
         std::ofstream fout;
@@ -283,8 +331,10 @@ int main(int argc, char** argv) {
             nyx::output::write_json(*out, bin, functions);
         } else if (args.format == "text") {
             nyx::output::write_text(*out, bin, disasm_sections);
-        } else if (args.format == "pseudo-c" || args.format == "pseudoc" || args.format == "c") {
+        } else if (args.format == "pseudo-c" || args.format == "pseudoc") {
             nyx::output::write_pseudo_c(*out, bin, functions);
+        } else if (args.format == "c") {
+            nyx::output::write_c(*out, bin, functions);
         } else if (args.format == "dot") {
             // DOT output needs the raw IR functions, not the pre-rendered
             // pseudo-C lines. Re-decompile with decompile_ir() and annotate
@@ -299,7 +349,7 @@ int main(int argc, char** argv) {
             // v0.0.6: annotated disassembly with interleaved source lines.
             nyx::output::write_annotated(*out, bin, disasm_sections);
         } else {
-            std::cerr << "error: unknown --format '" << args.format << "'. Use json, text, pseudo-c, dot or annotated.\n";
+            std::cerr << "error: unknown --format '" << args.format << "'. Use json, text, pseudo-c, c, dot or annotated.\n";
             return 1;
         }
         return 0;

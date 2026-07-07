@@ -30,6 +30,11 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
         return out;
     }
 
+    // v0.2.1: publish the BinaryInfo so that render_instruction can resolve
+    // Call targets to symbol names. Cleared before returning so we never
+    // leak a dangling pointer into a subsequent decompile() call.
+    set_render_binary_info(&bin);
+
     // Collect candidate functions: every Function symbol first.
     std::vector<const Symbol*> funcs;
     for (const auto& s : bin.symbols) {
@@ -202,6 +207,7 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
         }
     }
 
+    set_render_binary_info(nullptr);
     return out;
 }
 
@@ -225,7 +231,10 @@ DecompiledFunction Decompiler::decompile_range(
     df.insn_count  = fn.instruction_count();
     auto dom = nyx::ir::compute_dominators(fn);
         auto loops = nyx::ir::find_natural_loops(fn, dom);
+    // v0.2.1: enable symbol resolution for the Call render below.
+    set_render_binary_info(&bin);
         std::string body = render_pseudo_c(fn, dom, loops);
+    set_render_binary_info(nullptr);
     std::istringstream iss(body);
     std::string line;
     while (std::getline(iss, line)) df.lines.push_back(line);

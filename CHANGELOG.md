@@ -6,6 +6,64 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.2.1] - 2026-07-07
+
+Unified hotfix + 0.3.0 features: region builder bugs fixed and connected
+to CLI, WASM parser connected to BinaryParser::detect(), symbol resolution
+in calls, C output format, WASM lifter, else-if chains, and more.
+
+### Added
+
+- **C output format** (`--format c`): new writer (`c_writer.hpp/cpp`)
+  that generates compilable C code with function declarations, global
+  variable declarations, and sanitized bodies. Output compiles with
+  `gcc -c` (warnings only, no errors).
+- **WASM lifter** (`wasm_lifter.hpp/cpp`): stack-based lifter that
+  translates WASM bytecodes (local.get/set, i32.const, i32.add/sub/mul,
+  call, br, br_if, return, end, etc.) to Nyx IR. Unknown bytecodes
+  become Opaque.
+- **Else-if chains in region builder**: `structure_cfg` now detects
+  chains of `if (...) { ... } else if (...) { ... } else { ... }` by
+  recursively checking if the else-block itself contains a BranchCond
+  diamond. Handles arbitrary-depth chains.
+- **Symbol resolution in calls**: pseudo-C `render_instruction` now
+  resolves call targets to symbol names via `BinaryInfo::symbols` when
+  available (`call(add)` instead of `call(0x401126)`). Also applied to
+  the text writer (`; add` annotation after `call` instructions).
+- **WASM detection in BinaryParser::detect()**: WASM files (`\0asm`
+  magic) are now auto-detected and processed by `WasmParser` without
+  needing `--format-hint`.
+- **12 new tests**: 7 WASM lifter unit tests, 4 C writer unit tests,
+  1 else-if chain region test. Test count: 208 unit + 40 integration
+  (was 196 + 40).
+
+### Changed
+
+- **Region builder connected to CLI**: pseudo-C output now uses
+  `render_structured()` by default (not just with `-O1`), producing
+  `if/else/while/do-while` instead of `goto`/labels. Falls back to
+  `render_pseudo_c()` when structuring produces empty output.
+- **`--format c`** is now a separate format from `pseudo-c` (previously
+  `c` was an alias for pseudo-c).
+- Output writers and `nyx --version` now report `0.2.1`.
+
+### Fixed
+
+- **Bug A (region builder duplicated blocks)**: blocks assigned to an
+  if/else or loop region are now tracked in an `assigned` set and
+  skipped in the main walk, preventing duplicate rendering.
+- **Bug B (do-while with garbage vreg)**: infinite loops (back edge
+  without condition) now emit `while (1)` instead of
+  `while(v4294967295)`. A `render_condition()` helper returns `"1"`
+  when the condition is `nullopt` or `INVALID_VREG`.
+- **Bug D (gotos inside structures)**: `goto` instructions targeting
+  a loop header are now rendered as `continue;`; those targeting the
+  block after a loop are rendered as `break;`. A `LoopContext` is
+  threaded through `render_region` to track these addresses.
+- **If/else detector false positives**: the if/else detector no longer
+  claims loop-header blocks as if/else children (guards added for
+  `same_target` and `loop_header` successors).
+
 ## [0.2.0] - 2026-07-07
 
 Region structuring, SSA optimizations, WebAssembly support, and

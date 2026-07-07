@@ -14,6 +14,9 @@
 
 namespace nyx {
 
+// Forward declaration - keeps the public header free of types.hpp.
+struct BinaryInfo;
+
 /// Short C operator for binary IR opcodes (e.g. Add -> "+"). Returns "?"
 /// for non-binary opcodes.
 [[nodiscard]] std::string_view op_name_short(ir::OpCode op) noexcept;
@@ -39,5 +42,9 @@ namespace nyx {
 
 /// Formats an operand as C source.
 [[nodiscard]] std::string render_operand(const ir::Operand& o);
+
+/// v0.2.1: set the BinaryInfo used for symbol resolution in render_instruction.
+/// Pass nullptr to clear. The pointer is not retained beyond the next call.
+void set_render_binary_info(const BinaryInfo* bin);
 
 }  // namespace nyx

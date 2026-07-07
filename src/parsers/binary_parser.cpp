@@ -10,6 +10,7 @@
 #include "nyx/parsers/elf_parser.hpp"
 #include "nyx/parsers/macho_parser.hpp"
 #include "nyx/parsers/pe_parser.hpp"
+#include "nyx/parsers/wasm_parser.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -86,6 +87,11 @@ std::unique_ptr<BinaryParser> BinaryParser::detect(ByteView magic) {
         || magic32le == MH_MAGIC || magic32le == MH_MAGIC_64
         || magic32 == FAT_MAGIC || magic32le == FAT_MAGIC) {
         return std::make_unique<MachOParser>();
+    }
+    // WASM: magic is \0asm (0x00 0x61 0x73 0x6D)
+    if (magic.size() >= 4 && magic[0] == 0x00 && magic[1] == 0x61
+        && magic[2] == 0x73 && magic[3] == 0x6D) {
+        return std::make_unique<WasmParser>();
     }
     return nullptr;
 }
