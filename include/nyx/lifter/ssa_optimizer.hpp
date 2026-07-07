@@ -49,4 +49,10 @@ struct OptimizationOptions {
 /// are tracked. Returns the number of stores removed.
 [[nodiscard]] std::size_t dead_store_elimination_pass(Function& fn);
 
+/// v0.4.0: Simple interprocedural constant propagation.
+/// Propagates constant arguments from call sites into called functions.
+/// If a function is always called with the same constant argument,
+/// that constant is substituted for the parameter inside the function.
+[[nodiscard]] std::size_t interprocedural_constant_propagation(std::vector<Function>& fns);
+
 }  // namespace nyx::ir

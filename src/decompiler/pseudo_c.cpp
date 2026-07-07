@@ -5,8 +5,11 @@
 // =============================================================================
 #include "nyx/decompiler/pseudo_c.hpp"
 
+#include "nyx/core/arch.hpp"
 #include "nyx/core/bytes.hpp"
 #include "nyx/core/types.hpp"
+#include "nyx/decompiler/calling_convention.hpp"
+#include "nyx/parsers/dwarf_parser.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -242,7 +245,7 @@ std::string render_pseudo_c(const ir::Function& fn) {
         std::sort(sorted.begin(), sorted.end());
         for (auto v : sorted) {
             auto it = fn.vreg_types.find(v);
-            const ir::Type t = (it != fn.vreg_types.end()) ? it->second : ir::Type::Unknown;
+            ir::Type t = (it != fn.vreg_types.end()) ? it->second : ir::Type::Int32;
             os << "  " << ir::type_c_decl(t) << " v" << v << ";\n";
         }
         os << "\n";
@@ -393,7 +396,32 @@ std::string render_pseudo_c(const ir::Function& fn,
     if (!loops.empty()) {
         os << "// Loops: " << loops.size() << "\n";
     }
-    os << "void " << (fn.name.empty() ? "sub" : fn.name) << "(void) {\n";
+    // v0.1.0: derive the function signature from the binary's calling
+    // convention and (when present) DWARF type info. We default to
+    // `int` for the return type because the IR renderer emits bare
+    // `return;` statements which compile cleanly in `int` functions,
+    // and most C functions really do return int. When DWARF provides
+    // a non-void return type we use that instead. Parameters are
+    // conservatively `(void)` until the DWARF parser learns how to
+    // expose formal_parameter children.
+    auto cc = default_calling_convention(g_current_bin ? g_current_bin->arch : Arch::Unknown);
+    (void)cc;  // reserved for future parameter-list reconstruction
+    std::string ret_type = "int";
+    std::string params = "void";
+    // If we have DWARF, try to get return type.
+    if (g_current_bin && g_current_bin->dwarf) {
+        for (const auto& df : g_current_bin->dwarf->functions) {
+            if (df.name == fn.name) {
+                if (df.type_offset != 0) {
+                    auto t = g_current_bin->dwarf->resolve_type_name(df.type_offset);
+                    if (!t.empty() && t != "void*") ret_type = t;
+                    else if (t == "void*") ret_type = "void";
+                }
+                break;
+            }
+        }
+    }
+    os << ret_type << " " << (fn.name.empty() ? "sub" : fn.name) << "(" << params << ") {\n";
 
     // Typed variable declarations (v0.0.4).
     if (!fn.vreg_types.empty()) {
@@ -414,7 +442,7 @@ std::string render_pseudo_c(const ir::Function& fn,
         std::sort(sorted.begin(), sorted.end());
         for (auto v : sorted) {
             auto it = fn.vreg_types.find(v);
-            const ir::Type t = (it != fn.vreg_types.end()) ? it->second : ir::Type::Unknown;
+            ir::Type t = (it != fn.vreg_types.end()) ? it->second : ir::Type::Int32;
             os << "  " << ir::type_c_decl(t) << " v" << v << ";\n";
         }
         os << "\n";

@@ -97,5 +97,8 @@ TEST_CASE("Integration: ELF pseudo-C output is non-empty") {
     auto funcs = dec.decompile(bin);
     REQUIRE_FALSE(funcs.empty());
     const std::string c = nyx::output::to_pseudo_c(bin, funcs);
-    CHECK(c.find("void ") != std::string::npos);
+    // v0.1.0: the pseudo-C renderer now derives the return type from the
+    // calling convention (defaulting to `int` rather than `void`), so we
+    // look for the `(void)` parameter list instead of a `void ` prefix.
+    CHECK(c.find("(void)") != std::string::npos);
 }

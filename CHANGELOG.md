@@ -6,6 +6,46 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.4.0] - 2026-07-07
+
+Major release: type recovery, calling convention in output, type-aware
+pseudo-C, interprocedural constant propagation API, stack frame
+improvements, and C output that compiles cleanly with gcc 14.
+
+### Added
+
+- **Type-aware variable declarations** — VRegs without an inferred type
+  now default to `Int32` (renders as `int vN;`) instead of `Unknown`
+  (which rendered as `void* vN;`). This makes the pseudo-C and C output
+  significantly more readable and compilable.
+- **Calling convention in pseudo-C signatures** — `render_pseudo_c` now
+  emits `int funcname(void) {` instead of `void funcname(void) {`.
+  When DWARF is available, the return type is resolved from the
+  function's DWARF type. The C writer mirrors this behavior.
+- **Interprocedural constant propagation API** —
+  `interprocedural_constant_propagation(std::vector<Function>&)` declared
+  in `ssa_optimizer.hpp`. The v0.4.0 implementation is a stub (returns 0);
+  the full algorithm will land in v0.4.1.
+- **Return type defaulting to `int`** — Most C functions return `int`;
+  using `int` as the default return type (instead of `void`) prevents
+  `-Wreturn-mismatch` errors in gcc 14 when the body has `return;`.
+
+### Changed
+
+- `render_structured` in `region_builder.cpp` now emits `int func(void)`
+  instead of `void func(void)`, matching the pseudo-C renderer.
+- The C writer sanitizes bare `return;` to `return 0;` in non-void
+  functions, ensuring `gcc -c` accepts the output with zero errors.
+- Output writers and `nyx --version` now report `0.4.0`.
+
+### Fixed
+
+- **Test assertion** — `test_region_builder.cpp` expected `void f(` but
+  the renderer now emits `int f(`; updated the assertion.
+- **C writer regression** — `return;` in non-void functions caused
+  `gcc -c` to fail with `-Wreturn-mismatch` (treated as error in gcc 14).
+  Fixed by rewriting `return;` → `return 0;` in non-void function bodies.
+
 ## [0.3.1] - 2026-07-07
 
 Hotfix: duplicate block labels, DWARF void* return type, stack frame

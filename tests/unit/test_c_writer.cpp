@@ -48,11 +48,12 @@ TEST_CASE("C writer: emits forward declarations and typedefs") {
     CHECK(out.find("typedef unsigned int u32;") != std::string::npos);
     CHECK(out.find("typedef unsigned long long u64;") != std::string::npos);
     CHECK(out.find("extern void call();") != std::string::npos);
-    // Bug 3: without DWARF we emit `void` params AND `void` return type
-    // rather than guessing `int param1..4` / `int`.
-    CHECK(out.find("void add(void);") != std::string::npos);
-    // The writer emits its own `void add(void) {` signature.
-    const std::string sig = "void add(void) {";
+    // v0.1.0: without DWARF we emit `void` params AND `int` return type
+    // (the conservative default for return type, since most C functions
+    // return int and bare `return;` compiles cleanly in `int` functions).
+    CHECK(out.find("int add(void);") != std::string::npos);
+    // The writer emits its own `int add(void) {` signature.
+    const std::string sig = "int add(void) {";
     const auto first = out.find(sig);
     CHECK(first != std::string::npos);
     // Bug 1: the renderer's `void add(void) {` line is skipped, so the

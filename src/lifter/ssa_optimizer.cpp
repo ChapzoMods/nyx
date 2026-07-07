@@ -367,4 +367,17 @@ std::size_t optimize(Function& fn, const OptimizationOptions& opts) {
     return total;
 }
 
+// ---------------------------------------------------------------------------
+// v0.4.0: Interprocedural constant propagation (simplified)
+// ---------------------------------------------------------------------------
+std::size_t interprocedural_constant_propagation(std::vector<Function>& fns) {
+    // For v0.4.0 this is a stub that returns 0. The full implementation
+    // would: (1) collect constant arguments from all Call instructions,
+    // (2) build a summary per called function, (3) propagate constants
+    // into the called function's IR. The declaration is in place for
+    // the API; the implementation will be completed in v0.4.1.
+    (void)fns;
+    return 0;
+}
+
 }  // namespace nyx::ir

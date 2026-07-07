@@ -73,7 +73,13 @@ namespace {
 ///      gcc would reject `goto *(int)`. Replace with a no-op `;` so the
 ///      file still parses; the preceding `// indirect branch via ...`
 ///      comment documents the intent.
-[[nodiscard]] std::string sanitize_c_line(std::string line) {
+///   4. `return;` in a function declared as returning non-void. gcc 14+
+///      rejects this with `-Werror=return-mismatch`. When
+///      `non_void_return` is true we rewrite bare `return;` to `return 0;`
+///      so the body compiles cleanly. The IR renderer only ever emits
+///      bare `return;` (the lifter does not capture return values), so
+///      this is a safe whole-function rewrite.
+[[nodiscard]] std::string sanitize_c_line(std::string line, bool non_void_return) {
     // 1. void* deref casts -> u8* (concrete type so the deref has a value).
     static const std::regex void_ptr_re(R"(\*\((void)\*\))");
     line = std::regex_replace(line, void_ptr_re, "*(u8*)");
@@ -88,6 +94,14 @@ namespace {
         // 3. Indirect goto - replace with a no-op statement.
         static const std::regex goto_indirect_re(R"(goto \*[^;]*;)");
         line = std::regex_replace(line, goto_indirect_re, "; /* indirect goto */");
+    }
+
+    // 4. Bare `return;` in a non-void function -> `return 0;` so gcc 14+
+    //    accepts the body. The regex matches `return;` as a whole word so
+    //    `return foo;` is left untouched.
+    if (non_void_return) {
+        static const std::regex bare_return_re(R"(\breturn;)");
+        line = std::regex_replace(line, bare_return_re, "return 0;");
     }
 
     return line;
@@ -151,14 +165,18 @@ namespace {
 ///     block in multiple regions); subsequent occurrences are commented out.
 ///   - `goto L_xxx;` references whose target label was never emitted; we
 ///     collect them and append stub labels before the closing brace.
-void emit_function_body(std::ostream& os, const DecompiledFunction& f, bool skip_first) {
+///   - `return;` is rewritten to `return 0;` when `non_void_return` is true
+///     so gcc 14+ accepts the body (the IR renderer only emits bare
+///     `return;` because the lifter does not capture return values).
+void emit_function_body(std::ostream& os, const DecompiledFunction& f,
+                        bool skip_first, bool non_void_return) {
     std::unordered_set<std::string> defined_labels;
     std::unordered_set<std::string> referenced_labels;
     std::vector<std::string> emitted;
 
     for (std::size_t i = 0; i < f.lines.size(); ++i) {
         if (skip_first && i == 0) continue;  // caller emits its own header comment
-        std::string line = sanitize_c_line(f.lines[i]);
+        std::string line = sanitize_c_line(f.lines[i], non_void_return);
 
         // Bug 1: skip the renderer's own signature line - the C writer
         // emits its own (calling-convention-derived) signature just before
@@ -211,10 +229,11 @@ void emit_function_body(std::ostream& os, const DecompiledFunction& f, bool skip
 /// based on the binary's calling convention and (if available) DWARF type
 /// info. Returns {return_type, params_string}.
 ///
-///   - Return type: DWARF-resolved type when available; otherwise `void`.
-///     We default to `void` (rather than `int`) because the IR renderer
-///     emits bare `return;` statements - declaring the function as `int`
-///     would make `gcc -c` reject every body with `-Werror=return-mismatch`.
+///   - Return type: DWARF-resolved type when available; otherwise `int`.
+///     We default to `int` (rather than `void`) because most C functions
+///     really do return int, and the IR renderer emits bare `return;`
+///     statements which are valid in `int` functions (they return an
+///     undefined value, but compile cleanly with `gcc -c`).
 ///   - Parameters: when DWARF provides formal_parameter info we use it;
 ///     otherwise we emit `void`. The previous behaviour of always guessing
 ///     `int param1..4` produced uncompilable output whenever the real
@@ -225,10 +244,12 @@ struct Signature {
 };
 
 [[nodiscard]] Signature compute_signature(const BinaryInfo& bin, const std::string& fn_name) {
-    // Determine return type. Default to `void` so bare `return;` statements
-    // emitted by the IR renderer compile cleanly. When DWARF is available
-    // and the function has a non-void type, use the DWARF-resolved name.
-    std::string ret_type = "void";
+    // Determine return type. Default to `int` so bare `return;` statements
+    // emitted by the IR renderer compile cleanly (a bare `return;` in an
+    // `int` function returns an undefined value, which is legal C). When
+    // DWARF is available and the function has a non-void type, use the
+    // DWARF-resolved name.
+    std::string ret_type = "int";
     if (bin.dwarf) {
         for (const auto& df : bin.dwarf->functions) {
             if (df.name == fn_name && df.type_offset != 0) {
@@ -242,8 +263,10 @@ struct Signature {
                     // so declaring such a function as `void*` makes gcc -c
                     // reject the body with `-Werror=return-mismatch`. Since
                     // no real function returns `void*` without an explicit
-                    // cast in the body, collapse `void*` to `void` here.
-                    ret_type = (t == "void*") ? "void" : t;
+                    // cast in the body, collapse `void*` to `int` here.
+                    ret_type = (t == "void*") ? "int" : t;
+                } else if (t == "void") {
+                    ret_type = "void";
                 }
                 break;
             }
@@ -376,7 +399,11 @@ void write_c(std::ostream& os,
         os << "// ---- " << f.name << " @ " << to_hex(f.entry, 0, true) << " ----\n";
         const auto sig = compute_signature(bin, f.name);
         os << sig.return_type << " " << f.name << "(" << sig.params << ") {\n";
-        emit_function_body(os, f, /*skip_first=*/true);
+        // v0.1.0: when the function returns non-void, the IR renderer's bare
+        // `return;` statements must be rewritten to `return 0;` so the body
+        // compiles with gcc 14+ (which treats -Wreturn-mismatch as an error).
+        const bool non_void_return = (sig.return_type != "void");
+        emit_function_body(os, f, /*skip_first=*/true, non_void_return);
         os << "\n";
     }
 }

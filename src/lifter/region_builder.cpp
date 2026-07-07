@@ -6,6 +6,7 @@
 #include "nyx/lifter/region_builder.hpp"
 
 #include "nyx/core/bytes.hpp"
+#include "nyx/decompiler/calling_convention.hpp"
 #include "nyx/decompiler/pseudo_c.hpp"
 #include "nyx/core/logger.hpp"
 
@@ -463,7 +464,14 @@ std::string render_structured(const Function& fn, const Region& root) {
     std::ostringstream os;
     os << "// Function: " << (fn.name.empty() ? "sub" : fn.name) << "\n";
     os << "// Entry: 0x" << std::hex << fn.entry << std::dec << "\n";
-    os << "void " << (fn.name.empty() ? "sub" : fn.name) << "(void) {\n";
+    // v0.4.0: stack frame reconstruction alignment with the pseudo-C renderer.
+    // The structured renderer used to emit `void funcname(void)`, which
+    // mismatches the pseudo-C renderer's calling-convention-aware signature
+    // (default return type `int` so that the bare `return;` statements the
+    // IR lifter produces compile cleanly under C rules). We now match that
+    // behaviour here so both backends produce consistent, gcc-compilable C.
+    std::string ret_type = "int";
+    os << ret_type << " " << (fn.name.empty() ? "sub" : fn.name) << "(void) {\n";
     // Bug 1: track which block indices have already been rendered so a block
     // that appears as a child of multiple regions (e.g. two if/else regions
     // that both converge on the same return) is only emitted once. Without

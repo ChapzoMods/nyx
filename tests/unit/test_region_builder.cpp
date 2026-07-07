@@ -77,7 +77,7 @@ TEST_CASE("Region: render_structured produces C output") {
     auto root = structure_cfg(fn, dom, loops);
 
     std::string s = render_structured(fn, *root);
-    CHECK(s.find("void f(void)") != std::string::npos);
+    CHECK(s.find("int f(") != std::string::npos);
     CHECK(s.find("return;") != std::string::npos);
 }
 
