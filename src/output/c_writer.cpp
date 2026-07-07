@@ -111,8 +111,42 @@ namespace {
     return {};
 }
 
-/// Rewrites a single function body so it parses cleanly. Two issues need
-/// fixing per function:
+/// Returns true if `line` looks like a function signature line emitted by
+/// the pseudo-C renderer (e.g. `void add(void) {`). We detect this by
+/// checking that the line ends with `{` (after trimming trailing whitespace)
+/// and contains the function's name. The C writer emits its own calling-
+/// convention-derived signature, so these renderer lines must be skipped to
+/// avoid a double declaration and the resulting unbalanced braces.
+[[nodiscard]] bool is_signature_line(const std::string& line, const std::string& fn_name) {
+    if (fn_name.empty()) return false;
+    const auto last_non_ws = line.find_last_not_of(" \t\r\n");
+    if (last_non_ws == std::string::npos) return false;
+    if (line[last_non_ws] != '{') return false;
+    return line.find(fn_name) != std::string::npos;
+}
+
+/// Returns true if `line` is the function-level closing brace emitted by
+/// the pseudo-C renderer. The renderer emits this as `}` with NO leading
+/// whitespace (e.g. `os << "}\n";`), so we only match unindented brace
+/// lines. Nested closing braces (e.g. `  }` from an if/while block) are
+/// indented and must be preserved so the body's internal braces stay
+/// balanced. The C writer emits its own closing brace at the end of every
+/// function body, so this top-level brace must be skipped.
+[[nodiscard]] bool is_function_closing_brace_line(const std::string& line) {
+    if (line.empty() || line[0] != '}') return false;
+    for (std::size_t i = 1; i < line.size(); ++i) {
+        if (!std::isspace(static_cast<unsigned char>(line[i]))) return false;
+    }
+    return true;
+}
+
+/// Rewrites a single function body so it parses cleanly. Issues handled:
+///   - The renderer emits its own `void name(void) {` signature line which
+///     would create a double declaration alongside the writer's calling-
+///     convention signature; we skip such lines.
+///   - The renderer's trailing `}` would pair with the writer's `{` but the
+///     writer emits its own closing brace, so we skip the renderer's and
+///     add one ourselves to guarantee balanced braces.
 ///   - duplicate label definitions (the structured CFG can render the same
 ///     block in multiple regions); subsequent occurrences are commented out.
 ///   - `goto L_xxx;` references whose target label was never emitted; we
@@ -123,8 +157,18 @@ void emit_function_body(std::ostream& os, const DecompiledFunction& f, bool skip
     std::vector<std::string> emitted;
 
     for (std::size_t i = 0; i < f.lines.size(); ++i) {
-        if (skip_first && i == 0) continue;  // caller emits its own signature
+        if (skip_first && i == 0) continue;  // caller emits its own header comment
         std::string line = sanitize_c_line(f.lines[i]);
+
+        // Bug 1: skip the renderer's own signature line - the C writer
+        // emits its own (calling-convention-derived) signature just before
+        // calling emit_function_body. Skipping avoids double declarations
+        // and the unbalanced braces that follow.
+        if (is_signature_line(line, f.name)) continue;
+        // Skip the renderer's function-level closing brace (unindented `}`)
+        // - we emit one at the end. Only the top-level brace is skipped;
+        // nested indented braces (`  }`) are preserved.
+        if (is_function_closing_brace_line(line)) continue;
 
         // Track label definitions, commenting out duplicates.
         const std::string lbl = extract_label_def(line);
@@ -151,45 +195,40 @@ void emit_function_body(std::ostream& os, const DecompiledFunction& f, bool skip
         if (!defined_labels.count(r)) undefined.push_back(r);
     }
     if (!undefined.empty()) {
-        // Find the closing brace (last line ending with `}`) and insert
-        // the stubs before it.
         std::sort(undefined.begin(), undefined.end());
-        std::vector<std::string> stubs;
-        stubs.reserve(undefined.size());
         for (const auto& lbl : undefined) {
-            stubs.push_back("  " + lbl + ": ;  // stub for unresolved goto");
-        }
-        // Insert before the last `}` line (if any).
-        if (!emitted.empty() && emitted.back().find("}") != std::string::npos) {
-            std::string brace = emitted.back();
-            emitted.pop_back();
-            for (const auto& s : stubs) emitted.push_back(s);
-            emitted.push_back(brace);
-        } else {
-            for (const auto& s : stubs) emitted.push_back(s);
+            emitted.push_back("  " + lbl + ": ;  // stub for unresolved goto");
         }
     }
 
     for (const auto& line : emitted) os << line << "\n";
+    // Always emit the closing brace ourselves so the braces balance even
+    // when the renderer's body lacked one (defensive).
+    os << "}\n";
 }
 
 /// v0.1.0: Computes the C function signature for a decompiled function
 /// based on the binary's calling convention and (if available) DWARF type
 /// info. Returns {return_type, params_string}.
 ///
-///   - Return type: DWARF-resolved type when available; otherwise `int`
-///     (the default C return type when none is known).
-///   - Parameters: when the calling convention passes args in registers,
-///     emits `int param1, int param2, ...` (capped at 4 to keep signatures
-///     short). When the convention is stack-only or unknown, emits `void`.
+///   - Return type: DWARF-resolved type when available; otherwise `void`.
+///     We default to `void` (rather than `int`) because the IR renderer
+///     emits bare `return;` statements - declaring the function as `int`
+///     would make `gcc -c` reject every body with `-Werror=return-mismatch`.
+///   - Parameters: when DWARF provides formal_parameter info we use it;
+///     otherwise we emit `void`. The previous behaviour of always guessing
+///     `int param1..4` produced uncompilable output whenever the real
+///     function took a different number of arguments.
 struct Signature {
     std::string return_type;
     std::string params;
 };
 
 [[nodiscard]] Signature compute_signature(const BinaryInfo& bin, const std::string& fn_name) {
-    // Determine return type from DWARF if present.
-    std::string ret_type = "int";  // default - most C functions return int
+    // Determine return type. Default to `void` so bare `return;` statements
+    // emitted by the IR renderer compile cleanly. When DWARF is available
+    // and the function has a non-void type, use the DWARF-resolved name.
+    std::string ret_type = "void";
     if (bin.dwarf) {
         for (const auto& df : bin.dwarf->functions) {
             if (df.name == fn_name && df.type_offset != 0) {
@@ -200,18 +239,28 @@ struct Signature {
         }
     }
 
-    // Determine parameters from the calling convention.
-    auto cc = default_calling_convention(bin.arch);
-    std::string params;
-    if (cc.max_reg_args > 0) {
-        // Cap at 4 explicit params so the signatures stay readable.
-        const int n = std::min<int>(cc.max_reg_args, 4);
-        for (int p = 0; p < n; ++p) {
-            if (p > 0) params += ", ";
-            params += "int " + param_name(static_cast<std::uint8_t>(p));
+    // Determine parameters. The previous behaviour unconditionally emitted
+    // up to `cc.max_reg_args` (capped at 4) explicit `int paramN` arguments,
+    // which produced incorrect signatures for functions that took fewer (or
+    // no) arguments and made the generated file fail to compile with
+    // `gcc -c` whenever a call site passed a different argument count.
+    //
+    // Bug 3: prefer DWARF type info when available. The current DWARF
+    // parser does not yet expose formal_parameter children, so we cannot
+    // build the real parameter list - in that case we conservatively emit
+    // `void`, which is always safe and never produces a mismatched-call
+    // error. When parameter info is eventually added, this branch can be
+    // extended to emit the real list.
+    std::string params = "void";
+    if (bin.dwarf) {
+        for (const auto& df : bin.dwarf->functions) {
+            if (df.name == fn_name) {
+                // Future: derive the parameter count from the DWARF
+                // subroutine_type's formal_parameter children. For now we
+                // fall through to `void`.
+                break;
+            }
         }
-    } else {
-        params = "void";
     }
 
     return {ret_type, params};

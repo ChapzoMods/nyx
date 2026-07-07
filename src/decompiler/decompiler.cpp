@@ -8,6 +8,8 @@
 #include "nyx/decompiler/pseudo_c.hpp"
 #include "nyx/decompiler/type_inferer.hpp"
 #include "nyx/lifter/cfg_analysis.hpp"
+#include "nyx/parsers/wasm_parser.hpp"
+#include "nyx/parsers/wasm_lifter.hpp"
 
 #include "nyx/core/bytes.hpp"
 #include "nyx/core/logger.hpp"
@@ -15,14 +17,112 @@
 #include <algorithm>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 
 namespace nyx {
+
+namespace {
+
+/// Bug 2: WASM end-to-end lifter. WASM has no Capstone backend, so the
+/// regular Decompiler pipeline (Disassembler -> InstructionLifter) cannot
+/// handle Arch::Wasm. Instead we parse the WASM binary with parse_wasm()
+/// and lift each function body via lift_wasm_function(), producing a vector
+/// of IR functions that the rest of the pipeline (TypeInferer, structure_cfg,
+/// render_structured) can consume unchanged.
+///
+/// Function names come from the WASM export section when available; otherwise
+/// a synthetic `wasm_func_<idx>` name is used. The function type is resolved
+/// through `wasm.func_type_indices[func_idx] -> wasm.types[type_idx]`; when
+/// the index is out of range an empty type is used (the lifter handles that
+/// gracefully).
+[[nodiscard]] std::vector<ir::Function> decompile_wasm_ir(const BinaryInfo& bin) {
+    std::vector<ir::Function> out;
+
+    // We need the raw file bytes - re-load them from `bin.path`.
+    std::optional<ByteBuffer> file_buf;
+    if (!bin.path.empty()) file_buf = ByteBuffer::from_file(bin.path);
+    if (!file_buf) {
+        NYX_WARN("decompile_wasm_ir: could not read " + bin.path);
+        return out;
+    }
+
+    auto wasm = parse_wasm(file_buf->view());
+    if (!wasm) {
+        NYX_WARN("decompile_wasm_ir: parse_wasm returned nullopt for " + bin.path);
+        return out;
+    }
+
+    // Build a func_idx -> export-name lookup so lifted functions get the
+    // name they were exported with. When a function is not exported we
+    // fall back to a synthetic name.
+    std::unordered_map<std::uint32_t, std::string> export_names;
+    for (const auto& exp : wasm->exports) {
+        if (exp.kind == 0) {  // function export
+            export_names[exp.index] = exp.name;
+        }
+    }
+
+    for (const auto& body : wasm->functions) {
+        // Resolve the function type.
+        WasmFuncType type;
+        if (body.func_idx < wasm->func_type_indices.size()) {
+            const auto type_idx = wasm->func_type_indices[body.func_idx];
+            if (type_idx < wasm->types.size()) {
+                type = wasm->types[type_idx];
+            }
+        }
+
+        // Resolve the function name.
+        std::string name;
+        auto en = export_names.find(body.func_idx);
+        if (en != export_names.end()) {
+            name = en->second;
+        } else {
+            name = "wasm_func_" + std::to_string(body.func_idx);
+        }
+
+        try {
+            auto fn = lift_wasm_function(body, type, std::move(name));
+            TypeInferer(bin.arch, &bin).infer(fn);
+            out.push_back(std::move(fn));
+        } catch (const std::exception& e) {
+            NYX_WARN(std::string("decompile_wasm_ir: function ") + name + " failed: " + e.what());
+        }
+    }
+
+    return out;
+}
+
+}  // namespace
 
 Decompiler::Decompiler() : opts_{} {}
 Decompiler::Decompiler(Options opts) : opts_(opts) {}
 
 std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) const {
     std::vector<DecompiledFunction> out;
+
+    // Bug 2: WASM has no Capstone backend. Use the WasmLifter instead of
+    // the regular Disassembler -> InstructionLifter pipeline.
+    if (bin.arch == Arch::Wasm) {
+        set_render_binary_info(&bin);
+        auto ir_fns = decompile_wasm_ir(bin);
+        for (auto& fn : ir_fns) {
+            DecompiledFunction df;
+            df.name        = fn.name;
+            df.entry       = fn.entry;
+            df.block_count = fn.block_count();
+            df.insn_count  = fn.instruction_count();
+            auto dom = nyx::ir::compute_dominators(fn);
+            auto loops = nyx::ir::find_natural_loops(fn, dom);
+            std::string body = render_pseudo_c(fn, dom, loops);
+            std::istringstream iss(body);
+            std::string line;
+            while (std::getline(iss, line)) df.lines.push_back(line);
+            out.push_back(std::move(df));
+        }
+        set_render_binary_info(nullptr);
+        return out;
+    }
 
     Disassembler dis(bin.arch, bin.endian);
     if (!dis.valid()) {
@@ -250,6 +350,16 @@ DecompiledFunction Decompiler::decompile_range(
 
 std::vector<ir::Function> Decompiler::decompile_ir(const BinaryInfo& bin) const {
     std::vector<ir::Function> out;
+
+    // Bug 2: WASM has no Capstone backend. Use the WasmLifter instead of
+    // the regular Disassembler -> InstructionLifter pipeline. The IR
+    // functions returned here are consumed by main.cpp's structured
+    // re-rendering pass (structure_cfg + render_structured), so WASM
+    // output benefits from the same if/else/while/do-while recovery as
+    // native architectures.
+    if (bin.arch == Arch::Wasm) {
+        return decompile_wasm_ir(bin);
+    }
 
     Disassembler dis(bin.arch, bin.endian);
     if (!dis.valid()) {

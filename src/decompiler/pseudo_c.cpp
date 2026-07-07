@@ -93,6 +93,17 @@ std::string render_instruction(const ir::Instruction& i) {
     switch (i.op) {
         case ir::OpCode::Mov:
             os << "v" << i.dst << " = " << render_operand(i.operands[0]) << ";";
+            // v0.3.0: when the source immediate is a known .rodata string,
+            // append the literal as a trailing comment so the decompiled
+            // output is easier to read at a glance.
+            if (g_current_bin && !i.operands.empty()
+                && i.operands[0].kind == ir::Operand::Kind::Imm) {
+                auto addr = static_cast<std::uint64_t>(i.operands[0].imm_value);
+                auto it = g_current_bin->rodata_strings.find(addr);
+                if (it != g_current_bin->rodata_strings.end()) {
+                    os << "  // \"" << it->second << "\"";
+                }
+            }
             break;
         case ir::OpCode::Load:
             os << "v" << i.dst << " = " << render_operand(i.operands[0]) << ";";

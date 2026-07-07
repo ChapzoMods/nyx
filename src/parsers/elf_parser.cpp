@@ -315,6 +315,40 @@ BinaryInfo ElfParser::parse(ByteView data) const {
         info.sections.push_back(sec);
     }
 
+    // Extract printable ASCII strings (length >= 4) from the .rodata section.
+    // Each string is keyed by its virtual address so the decompiler can resolve
+    // immediate operands that point at it back to the literal text.
+    for (const auto& sec : info.sections) {
+        if (sec.name != ".rodata" || sec.is_nobits) continue;
+        const std::size_t start = sec.file_off;
+        const std::size_t end   = sec.file_off + sec.file_size;
+        if (end > data.size() || end <= start) break;
+        std::string current;
+        std::size_t run_start = 0;
+        for (std::size_t i = start; i < end; ++i) {
+            const std::uint8_t b = data[i];
+            if (b >= 0x20u && b <= 0x7Eu) {
+                if (current.empty()) run_start = i;
+                current.push_back(static_cast<char>(b));
+            } else {
+                if (current.size() >= 4) {
+                    const std::uint64_t vaddr = sec.vaddr + (run_start - start);
+                    info.rodata_strings.emplace(vaddr, std::move(current));
+                } else {
+                    current.clear();
+                }
+                // Any non-printable byte (null or otherwise) terminates the run.
+                current.clear();
+            }
+        }
+        // Trailing run without a null terminator.
+        if (current.size() >= 4) {
+            const std::uint64_t vaddr = sec.vaddr + (run_start - start);
+            info.rodata_strings.emplace(vaddr, std::move(current));
+        }
+        break;  // only the first .rodata section
+    }
+
     // Program headers: detect NX (PT_GNU_STACK without execute flag) and RELRO.
     for (std::uint16_t i = 0; i < phnum; ++i) {
         const std::size_t off = phoff + static_cast<std::size_t>(i) * phentsize;

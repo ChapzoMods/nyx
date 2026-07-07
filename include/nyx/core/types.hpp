@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace nyx {
@@ -95,6 +96,9 @@ struct BinaryInfo {
     /// BinaryParser::load_dwarf() when debug sections are present.
     /// Nullptr when the binary has no DWARF or it hasn't been loaded yet.
     std::shared_ptr<DwarfInfo> dwarf;
+
+    /// v0.3.0: strings extracted from .rodata/.rdata, mapped by their virtual address.
+    std::unordered_map<std::uint64_t, std::string> rodata_strings;
 
     /// Returns the first executable section (typically .text or __TEXT).
     [[nodiscard]] const Section* code_section() const noexcept;

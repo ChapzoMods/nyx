@@ -6,6 +6,49 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.3.0] - 2026-07-07
+
+Major release: all v0.2.2 bugs fixed, WASM end-to-end decompilation,
+C output regression fixed and verified, string analysis from .rodata,
+regression test harness, and quality improvements.
+
+### Fixed
+
+- **REGRESSION CRITICAL: C writer double signature** — The C writer
+  was emitting two function signatures (one from calling conventions,
+  one from the body renderer), producing unbalanced braces and
+  uncompilable output. Fixed by detecting and skipping signature lines
+  in `f.lines` that match the function name. `gcc -c` now accepts the
+  output with zero errors.
+- **WASM end-to-end decompilation** — The decompiler now detects
+  `Arch::Wasm` and invokes the WasmLifter directly instead of trying
+  Capstone. WASM files produce pseudo-C and C output without errors.
+- **Calling convention param count** — The C writer no longer emits
+  `int param1, param2, param3, param4` for every function. Without
+  DWARF info, it emits `void` params (safer than guessing).
+- **Duplicate blocks in do-while** — All loop body blocks are now
+  properly added to the `assigned` set in the region builder.
+
+### Added
+
+- **String analysis from .rodata** — ELF parser now extracts printable
+  ASCII strings (>= 4 chars) from the `.rodata` section, stored in
+  `BinaryInfo::rodata_strings` mapped by virtual address. When a Mov
+  instruction references a known string address, the pseudo-C output
+  appends a `// "string content"` comment.
+- **Regression test script** — `scripts/regression_test.sh` runs all
+  6 output formats on all fixtures, checks for crashes, and verifies
+  that `--format c` output compiles with `gcc -c`.
+- **WASM decompile path in decompiler** — `Decompiler::decompile()` and
+  `decompile_ir()` now branch to `decompile_wasm_ir()` when
+  `bin.arch == Arch::Wasm`, using the WasmLifter to produce IR directly.
+
+### Changed
+
+- Output writers and `nyx --version` now report `0.3.0`.
+- The C writer defaults to `void` return type and `void` params when
+  no DWARF info is available (previously emitted `int` with 4 params).
+
 ## [0.2.2] - 2026-07-07
 
 Hotfix: function merging fix, WASM end-to-end, C calling conventions,

@@ -5,6 +5,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <sstream>
 #include <string>
 
@@ -47,9 +48,23 @@ TEST_CASE("C writer: emits forward declarations and typedefs") {
     CHECK(out.find("typedef unsigned int u32;") != std::string::npos);
     CHECK(out.find("typedef unsigned long long u64;") != std::string::npos);
     CHECK(out.find("extern void call();") != std::string::npos);
-    // SysV AMD64 passes up to 6 args in registers; we cap at 4.
-    CHECK(out.find("int add(int param1, int param2, int param3, int param4);") != std::string::npos);
-    CHECK(out.find("int add(int param1, int param2, int param3, int param4) {") != std::string::npos);
+    // Bug 3: without DWARF we emit `void` params AND `void` return type
+    // rather than guessing `int param1..4` / `int`.
+    CHECK(out.find("void add(void);") != std::string::npos);
+    // The writer emits its own `void add(void) {` signature.
+    const std::string sig = "void add(void) {";
+    const auto first = out.find(sig);
+    CHECK(first != std::string::npos);
+    // Bug 1: the renderer's `void add(void) {` line is skipped, so the
+    // signature appears exactly once (no double declaration, balanced
+    // braces).
+    CHECK(out.find(sig, first + 1) == std::string::npos);
+    // Bug 1: the body's own closing brace is skipped; the writer adds the
+    // only `}`. With one signature line and one closing brace the braces
+    // are balanced.
+    const std::size_t open_braces = static_cast<std::size_t>(std::count(out.begin(), out.end(), '{'));
+    const std::size_t close_braces = static_cast<std::size_t>(std::count(out.begin(), out.end(), '}'));
+    CHECK(open_braces == close_braces);
 }
 
 TEST_CASE("C writer: collects vregs into a global int block") {
