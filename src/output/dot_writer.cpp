@@ -246,6 +246,21 @@ void write_dot(std::ostream& os, const ir::Function& fn,
         }
     }
 
+    // Legend - documents the colour scheme used by the node fills and the
+    // dashed back-edge style. Emitted as a single HTML-like label node so
+    // Graphviz renders it as a small table outside the CFG.
+    os << "\n  // Legend\n";
+    os << "  legend [shape=none, label=<\n";
+    os << "    <TABLE border=\"1\" cellspacing=\"0\" cellpadding=\"4\">\n";
+    os << "      <TR><TD colspan=\"2\"><B>Legend</B></TD></TR>\n";
+    os << "      <TR><TD bgcolor=\"lightgreen\">Entry</TD><TD>Function entry block</TD></TR>\n";
+    os << "      <TR><TD bgcolor=\"lightyellow\">Loop header</TD><TD>Loop entry point</TD></TR>\n";
+    os << "      <TR><TD bgcolor=\"lightblue\">Loop body</TD><TD>Block inside a loop</TD></TR>\n";
+    os << "      <TR><TD bgcolor=\"lightgrey\">Unreachable</TD><TD>Pruned (dead code)</TD></TR>\n";
+    os << "      <TR><TD>---</TD><TD>dashed = back edge</TD></TR>\n";
+    os << "    </TABLE>\n";
+    os << "  >];\n";
+
     os << "}\n";
 }
 

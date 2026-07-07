@@ -38,6 +38,7 @@ constexpr std::array<ArchInfo, static_cast<std::size_t>(Arch::__count)> kArchInf
     /* MIPS     */ {"mips",    "MIPS (32-bit)",      32, Endian::Big},
     /* MIPS64   */ {"mips64",  "MIPS (64-bit)",      64, Endian::Big},
     /* RISCV    */ {"riscv",   "RISC-V",             0,  Endian::Little},
+    /* Wasm     */ {"wasm",    "WebAssembly",        32, Endian::Little},
 }};
 
 }  // namespace
@@ -138,6 +139,7 @@ std::optional<CsConfig> for_arch(Arch a, Endian e) {
             return c;
         case Arch::Unknown:
         case Arch::RISCV:
+        case Arch::Wasm:
         case Arch::__count:
             return std::nullopt;
     }

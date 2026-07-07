@@ -24,6 +24,7 @@ enum class Arch : std::uint8_t {
     MIPS,       // 32-bit MIPS
     MIPS64,     // 64-bit MIPS
     RISCV,      // reserved for future versions
+    Wasm,       // WebAssembly (virtual ISA, 32-bit addresses)
     __count,
 };
 

@@ -7,6 +7,9 @@
 
 #include "nyx/core/arch.hpp"
 #include "nyx/core/bytes.hpp"
+#include "nyx/decompiler/calling_convention.hpp"
+#include "nyx/decompiler/type_inferer.hpp"
+#include "nyx/parsers/dwarf_parser.hpp"
 #include "nyx/version.hpp"
 
 #include <algorithm>
@@ -114,13 +117,14 @@ namespace {
 ///     block in multiple regions); subsequent occurrences are commented out.
 ///   - `goto L_xxx;` references whose target label was never emitted; we
 ///     collect them and append stub labels before the closing brace.
-void emit_function_body(std::ostream& os, const DecompiledFunction& f) {
+void emit_function_body(std::ostream& os, const DecompiledFunction& f, bool skip_first) {
     std::unordered_set<std::string> defined_labels;
     std::unordered_set<std::string> referenced_labels;
     std::vector<std::string> emitted;
 
-    for (const auto& raw : f.lines) {
-        std::string line = sanitize_c_line(raw);
+    for (std::size_t i = 0; i < f.lines.size(); ++i) {
+        if (skip_first && i == 0) continue;  // caller emits its own signature
+        std::string line = sanitize_c_line(f.lines[i]);
 
         // Track label definitions, commenting out duplicates.
         const std::string lbl = extract_label_def(line);
@@ -169,6 +173,50 @@ void emit_function_body(std::ostream& os, const DecompiledFunction& f) {
     for (const auto& line : emitted) os << line << "\n";
 }
 
+/// v0.1.0: Computes the C function signature for a decompiled function
+/// based on the binary's calling convention and (if available) DWARF type
+/// info. Returns {return_type, params_string}.
+///
+///   - Return type: DWARF-resolved type when available; otherwise `int`
+///     (the default C return type when none is known).
+///   - Parameters: when the calling convention passes args in registers,
+///     emits `int param1, int param2, ...` (capped at 4 to keep signatures
+///     short). When the convention is stack-only or unknown, emits `void`.
+struct Signature {
+    std::string return_type;
+    std::string params;
+};
+
+[[nodiscard]] Signature compute_signature(const BinaryInfo& bin, const std::string& fn_name) {
+    // Determine return type from DWARF if present.
+    std::string ret_type = "int";  // default - most C functions return int
+    if (bin.dwarf) {
+        for (const auto& df : bin.dwarf->functions) {
+            if (df.name == fn_name && df.type_offset != 0) {
+                auto t = bin.dwarf->resolve_type_name(df.type_offset);
+                if (!t.empty() && t != "void") ret_type = t;
+                break;
+            }
+        }
+    }
+
+    // Determine parameters from the calling convention.
+    auto cc = default_calling_convention(bin.arch);
+    std::string params;
+    if (cc.max_reg_args > 0) {
+        // Cap at 4 explicit params so the signatures stay readable.
+        const int n = std::min<int>(cc.max_reg_args, 4);
+        for (int p = 0; p < n; ++p) {
+            if (p > 0) params += ", ";
+            params += "int " + param_name(static_cast<std::uint8_t>(p));
+        }
+    } else {
+        params = "void";
+    }
+
+    return {ret_type, params};
+}
+
 }  // namespace
 
 void write_c(std::ostream& os,
@@ -197,11 +245,14 @@ void write_c(std::ostream& os,
     os << "extern unsigned long long pop(void);\n\n";
 
     // Forward declarations of every decompiled function so callers inside the
-    // bodies resolve. Skip names that are not valid C identifiers.
+    // bodies resolve. Skip names that are not valid C identifiers. Each
+    // signature is derived from the binary's calling convention and (if
+    // available) DWARF type info, so the declarations match the bodies.
     os << "// Forward declarations.\n";
     for (const auto& f : functions) {
         if (!is_valid_c_ident(f.name)) continue;
-        os << "void " << f.name << "(void);\n";
+        const auto sig = compute_signature(bin, f.name);
+        os << sig.return_type << " " << f.name << "(" << sig.params << ");\n";
     }
     os << "\n";
 
@@ -228,13 +279,17 @@ void write_c(std::ostream& os,
     }
 
     // Function bodies. The DecompiledFunction::lines vector already contains
-    // the rendered function signature line and the closing brace. We pass
-    // each function through emit_function_body, which sanitises pseudo-C
-    // constructs that gcc would reject and patches up duplicate/undefined
-    // labels produced by the structured CFG renderer.
+    // the rendered function signature line and the closing brace. We replace
+    // the pre-rendered signature with one derived from the calling convention
+    // (so the body matches its forward declaration) and pass the rest through
+    // emit_function_body, which sanitises pseudo-C constructs that gcc would
+    // reject and patches up duplicate/undefined labels produced by the
+    // structured CFG renderer.
     for (const auto& f : functions) {
         os << "// ---- " << f.name << " @ " << to_hex(f.entry, 0, true) << " ----\n";
-        emit_function_body(os, f);
+        const auto sig = compute_signature(bin, f.name);
+        os << sig.return_type << " " << f.name << "(" << sig.params << ") {\n";
+        emit_function_body(os, f, /*skip_first=*/true);
         os << "\n";
     }
 }

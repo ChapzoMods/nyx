@@ -25,6 +25,7 @@ enum class BinaryFormat : std::uint8_t {
     Elf,
     Pe,
     MachO,
+    Wasm,
 };
 
 [[nodiscard]] std::string_view to_string(BinaryFormat f) noexcept;

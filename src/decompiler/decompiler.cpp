@@ -81,17 +81,24 @@ std::vector<DecompiledFunction> Decompiler::decompile(const BinaryInfo& bin) con
 
     for (const Symbol* sym : funcs) {
         if (sym->size == 0 && opts_.linear_sweep_fallback == false) continue;
-        const std::size_t max_bytes = opts_.max_insns_per_function * 16;  // generous upper bound
+        const std::size_t max_bytes = (sym->size > 0)
+            ? std::min(static_cast<std::size_t>(sym->size), opts_.max_insns_per_function * 16)
+            : opts_.max_insns_per_function * 16;
         ByteView bytes = bytes_at(sym->value, max_bytes);
         if (bytes.empty()) continue;
 
         // Decode up to max_insns_per_function OR until ret/jmp out of section.
         // Wrap in try/catch so a single bad instruction doesn't kill the whole run.
+        // When the symbol has a known size, also bound the instruction count so
+        // we never lift blocks that belong to the next function.
         std::vector<DecodedInstruction> insns;
         ir::Function fn;
         bool ok = true;
         try {
-            insns = dis.decode(bytes, sym->value, opts_.max_insns_per_function);
+            const std::size_t max_insns = (sym->size > 0)
+                ? static_cast<std::size_t>(sym->size)
+                : opts_.max_insns_per_function;
+            insns = dis.decode(bytes, sym->value, max_insns);
             if (insns.empty()) ok = false;
             else {
                 fn = lifter.lift_function(insns, sym->name, sym->value);
@@ -279,11 +286,16 @@ std::vector<ir::Function> Decompiler::decompile_ir(const BinaryInfo& bin) const 
               [](const Symbol* a, const Symbol* b){ return a->value < b->value; });
 
     for (const Symbol* sym : funcs) {
-        const std::size_t max_bytes = opts_.max_insns_per_function * 16;
+        const std::size_t max_bytes = (sym->size > 0)
+            ? std::min(static_cast<std::size_t>(sym->size), opts_.max_insns_per_function * 16)
+            : opts_.max_insns_per_function * 16;
         ByteView bytes = bytes_at(sym->value, max_bytes);
         if (bytes.empty()) continue;
         try {
-            auto insns = dis.decode(bytes, sym->value, opts_.max_insns_per_function);
+            const std::size_t max_insns = (sym->size > 0)
+                ? static_cast<std::size_t>(sym->size)
+                : opts_.max_insns_per_function;
+            auto insns = dis.decode(bytes, sym->value, max_insns);
             if (insns.empty()) continue;
             auto fn = lifter.lift_function(insns, sym->name, sym->value);
             TypeInferer(bin.arch, &bin).infer(fn);

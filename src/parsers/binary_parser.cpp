@@ -24,6 +24,7 @@ std::string_view to_string(BinaryFormat f) noexcept {
         case BinaryFormat::Elf:     return "elf";
         case BinaryFormat::Pe:      return "pe";
         case BinaryFormat::MachO:   return "mach-o";
+        case BinaryFormat::Wasm:    return "wasm";
     }
     return "unknown";
 }
@@ -32,6 +33,7 @@ std::optional<BinaryFormat> format_from_name(std::string_view s) noexcept {
     if (s == "elf" || s == "ELF")                return BinaryFormat::Elf;
     if (s == "pe"  || s == "PE"  || s == "PE32" || s == "PE32+") return BinaryFormat::Pe;
     if (s == "mach-o" || s == "macho" || s == "Mach-O") return BinaryFormat::MachO;
+    if (s == "wasm" || s == "WASM" || s == "WebAssembly") return BinaryFormat::Wasm;
     return std::nullopt;
 }
 

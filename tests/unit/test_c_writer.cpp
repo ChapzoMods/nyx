@@ -47,8 +47,9 @@ TEST_CASE("C writer: emits forward declarations and typedefs") {
     CHECK(out.find("typedef unsigned int u32;") != std::string::npos);
     CHECK(out.find("typedef unsigned long long u64;") != std::string::npos);
     CHECK(out.find("extern void call();") != std::string::npos);
-    CHECK(out.find("void add(void);") != std::string::npos);
-    CHECK(out.find("void add(void) {") != std::string::npos);
+    // SysV AMD64 passes up to 6 args in registers; we cap at 4.
+    CHECK(out.find("int add(int param1, int param2, int param3, int param4);") != std::string::npos);
+    CHECK(out.find("int add(int param1, int param2, int param3, int param4) {") != std::string::npos);
 }
 
 TEST_CASE("C writer: collects vregs into a global int block") {

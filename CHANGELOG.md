@@ -6,6 +6,51 @@ and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.
 once 1.0.0 is reached. Pre-1.0 versions may break the public API between
 minor bumps.
 
+## [0.2.2] - 2026-07-07
+
+Hotfix: function merging fix, WASM end-to-end, C calling conventions,
+dot legend, region builder duplicate block fix, goto-to-break/continue
+for BranchCond.
+
+### Fixed
+
+- **Bug C (CRITICAL): functions mixed together** — When a binary has a
+  symbol table with known function sizes (ELF/PE), the decompiler now
+  limits the bytes read to `sym->size` instead of a generous upper bound.
+  This prevents blocks from consecutive functions (e.g. `main` leaking
+  into `factorial`) from being included in the wrong function's IR.
+  Applied to both `decompile()` and `decompile_ir()`.
+- **Bug A (duplicate blocks in region builder)** — Added a final cleanup
+  pass in `structure_cfg` that removes any `Block` children from the root
+  sequence whose index is in the `assigned` set. Catches residual
+  duplicates that slipped through the main walk.
+- **Bug D (gotos inside structures)** — `render_region` now also handles
+  `BranchCond` instructions targeting a loop header (→ `if (cond)
+  continue;`) or post-loop address (→ `if (!(cond)) break;`), not just
+  unconditional `Branch`.
+
+### Added
+
+- **Arch::Wasm and BinaryFormat::Wasm** — WASM is now a first-class
+  architecture and format in the enum system. `WasmParser::parse()` sets
+  `bin.arch = Arch::Wasm` and `bin.format = BinaryFormat::Wasm`. The
+  `arch_name()` returns `"wasm"`, `arch_pretty()` returns `"WebAssembly"`.
+  Capstone mapping returns `nullopt` (WASM uses its own lifter).
+- **C writer with calling conventions** — `--format c` now emits function
+  signatures with parameters derived from the calling convention
+  (`int add(int param1, int param2, int param3, int param4);` instead of
+  `void add(void);`). Return type is resolved from DWARF when available,
+  defaulting to `int`.
+- **Dot legend** — The extended DOT output now includes a legend node
+  with a colour key (Entry, Loop header, Loop body, Unreachable, dashed =
+  back edge).
+
+### Changed
+
+- Output writers and `nyx --version` now report `0.2.2`.
+- WASM files now show `"format": "wasm"` and `"arch": "wasm"` in JSON
+  output instead of `"unknown"`.
+
 ## [0.2.1] - 2026-07-07
 
 Unified hotfix + 0.3.0 features: region builder bugs fixed and connected

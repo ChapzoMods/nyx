@@ -18,7 +18,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(nyx
-    VERSION 0.2.1
+    VERSION 0.2.2
     DESCRIPTION "Nyx - a headless decompilation engine"
     HOMEPAGE_URL "https://github.com/Chapzoo/nyx"
     LANGUAGES CXX

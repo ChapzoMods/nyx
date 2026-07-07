@@ -205,8 +205,8 @@ BinaryInfo WasmParser::parse(ByteView data) const {
     }
 
     BinaryInfo info{};
-    info.format = BinaryFormat::Unknown;  // WASM doesn't fit ELF/PE/Mach-O
-    info.arch = Arch::Unknown;            // WASM is architecture-independent
+    info.format = BinaryFormat::Wasm;  // WASM has its own format enum
+    info.arch = Arch::Wasm;            // WASM is a virtual ISA
     info.endian = Endian::Little;
     info.is_64bit = true;  // WASM uses 32-bit addresses but 64-bit ints
     info.is_pie = true;

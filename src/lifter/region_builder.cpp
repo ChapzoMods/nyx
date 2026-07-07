@@ -9,6 +9,7 @@
 #include "nyx/decompiler/pseudo_c.hpp"
 #include "nyx/core/logger.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <sstream>
 #include <unordered_map>
@@ -287,6 +288,14 @@ std::unique_ptr<Region> structure_cfg(
         }
     }
 
+    // Final cleanup: remove any Block children that were assigned to a region.
+    root->children.erase(
+        std::remove_if(root->children.begin(), root->children.end(),
+            [&](const std::unique_ptr<Region>& r) {
+                return r->kind == Region::Kind::Block && assigned.count(r->block_idx);
+            }),
+        root->children.end());
+
     return root;
 }
 
@@ -340,6 +349,19 @@ void render_region(std::ostringstream& os, const Function& fn, const Region& r,
                     }
                     if (lc->post_loop_addr != 0 && target == lc->post_loop_addr) {
                         pad(); os << "  break;\n";
+                        continue;
+                    }
+                }
+                // Also handle BranchCond that targets loop header (-> continue) or post-loop (-> break)
+                if (lc && is_last && ins.op == OpCode::BranchCond && ins.operands.size() >= 2
+                    && ins.operands[1].kind == Operand::Kind::Label) {
+                    const auto target = ins.operands[1].label_addr;
+                    if (target == lc->header_addr) {
+                        os << "    if (" << render_operand(ins.operands[0]) << ") continue;\n";
+                        continue;
+                    }
+                    if (lc->post_loop_addr != 0 && target == lc->post_loop_addr) {
+                        os << "    if (!(" << render_operand(ins.operands[0]) << ")) break;\n";
                         continue;
                     }
                 }
